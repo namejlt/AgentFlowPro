@@ -1,0 +1,39 @@
+# AgentFlow Pro 配置文件
+# 本文件为配置参考，实际运行时优先使用环境变量
+
+app:
+  name: AgentFlow Pro
+
+server:
+  addr: ":28131"
+  mode: release          # debug | release
+
+database:
+  host: postgres
+  port: 5432
+  user: agentflow
+  password: agentflow_secret_2024
+  dbname: agentflow
+  sslmode: disable
+  timezone: Asia/Shanghai
+  max_idle_conns: 10
+  max_open_conns: 100
+  conn_max_lifetime: 1h
+
+auth:
+  jwt_secret: "change-me-to-a-random-64-char-string-in-production-xxxxx"
+  jwt_expire: 24h
+  encryption_key: "0123456789abcdef0123456789abcdef"   # 32 bytes AES-256
+
+engine:
+  max_workers: 64
+  task_timeout: 30m
+  debug_mode: false
+
+logging:
+  level: info            # debug | info | warn | error
+  format: json           # json | console
+
+storage:
+  upload_dir: /app/uploads
+  max_file_size_mb: 50

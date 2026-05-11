@@ -1,0 +1,15 @@
+.git
+.env
+.env.*
+*.md
+docs/
+web/
+docker/
+config/
+*.exe
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+vendor/
