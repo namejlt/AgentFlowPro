@@ -56,7 +56,7 @@ docker compose logs -f backend
 
 | 字段 | 值 |
 |------|------|
-| 邮箱 | admin@agentflow.dev |
+| 邮箱 | admin@agentflow.local |
 | 密码 | admin123 |
 
 > ⚠️ **生产环境请务必修改默认密码！**

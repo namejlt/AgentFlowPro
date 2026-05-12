@@ -24,9 +24,14 @@ export interface LoginRequest {
 }
 
 export interface LoginResponse {
-  token: string
-  refresh_token: string
-  user: UserItem
+  access_token: string
+  expires_in: number
+  user: {
+    id: string
+    username: string
+    email: string
+    role: string
+  }
 }
 
 export interface UserItem {

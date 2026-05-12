@@ -128,7 +128,7 @@ async function doPreview() {
   previewLoading.value = true
   previewOutput.value = ''
   try {
-    const res = await apiPreviewAgent(previewAgent.value.id, { input: previewInput.value })
+    const res = await apiPreviewAgent(previewAgent.value.id, { globals: { content: previewInput.value } })
     previewOutput.value = res.data.data.output
   } catch {} finally {
     previewLoading.value = false

@@ -1,22 +1,21 @@
 import router from './index'
-import { useUserStore } from '@/stores/user'
 
-router.beforeEach(async (to, _from, next) => {
-  const userStore = useUserStore()
+router.beforeEach(async (to, from, next) => {
+  const token = localStorage.getItem('token')
+
   if (to.meta.public) {
+    if (token && to.path === '/login') {
+      next('/dashboard')
+      return
+    }
     next()
     return
   }
-  if (!userStore.token) {
+
+  if (!token) {
     next('/login')
     return
   }
-  if (!userStore.user) {
-    await userStore.fetchMe()
-    if (!userStore.user) {
-      next('/login')
-      return
-    }
-  }
+
   next()
 })

@@ -17,15 +17,15 @@ import (
 )
 
 type wfDTO struct {
-	Name           string   `json:"name"`
-	Description    *string  `json:"description"`
-	Tags           []string `json:"tags"`
-	GlobalParams   []any    `json:"global_params"`
-	Nodes          []any    `json:"nodes"`
-	Edges          []any    `json:"edges"`
+	Name           string         `json:"name"`
+	Description    *string        `json:"description"`
+	Tags           []string       `json:"tags"`
+	GlobalParams   []any          `json:"global_params"`
+	Nodes          []any          `json:"nodes"`
+	Edges          []any          `json:"edges"`
 	ExecConfig     map[string]any `json:"exec_config"`
-	DefaultModelID *uuid.UUID `json:"default_model_id"`
-	Visibility     string   `json:"visibility"`
+	DefaultModelID *uuid.UUID     `json:"default_model_id"`
+	Visibility     string         `json:"visibility"`
 }
 
 func (a *App) CreateWorkflow(c *gin.Context) {
@@ -315,7 +315,7 @@ func (a *App) ConfirmImport(c *gin.Context) {
 	wf := model.Workflow{
 		OwnerID: uid(c), Name: str(p["name"]) + " (imported)",
 		Description: strPtr(p["description"]),
-		Tags: jbytes(p["tags"]), GlobalParams: jbytes(p["global_params"]), Nodes: jbytes(p["nodes"]), Edges: jbytes(p["edges"]),
+		Tags:        jbytes(p["tags"]), GlobalParams: jbytes(p["global_params"]), Nodes: jbytes(p["nodes"]), Edges: jbytes(p["edges"]),
 		ExecConfig: jbytes(p["exec_config"]), Version: 1, Visibility: "private",
 	}
 	_ = body.Bindings

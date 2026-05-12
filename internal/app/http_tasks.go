@@ -72,10 +72,17 @@ func (a *App) GetTask(c *gin.Context) {
 	})
 }
 
+// ListTasks returns a paginated list of tasks for the current user.
 func (a *App) ListTasks(c *gin.Context) {
 	p := pagination.FromQuery(c)
 	var list []model.Task
 	q := a.DB.Model(&model.Task{}).Where("owner_id = ?", uid(c))
+	if kw := p.Keyword; kw != "" {
+		q = q.Where("mode ILIKE ? OR status ILIKE ?", "%"+kw+"%", "%"+kw+"%")
+	}
+	if st := c.Query("status"); st != "" {
+		q = q.Where("status = ?", st)
+	}
 	var total int64
 	_ = q.Count(&total).Error
 	if err := q.Order("created_at desc").Offset(p.Offset).Limit(p.PageSize).Find(&list).Error; err != nil {
@@ -84,7 +91,19 @@ func (a *App) ListTasks(c *gin.Context) {
 	}
 	out := make([]gin.H, 0, len(list))
 	for _, t := range list {
-		out = append(out, gin.H{"id": t.ID.String(), "workflow_id": t.WorkflowID.String(), "status": t.Status, "created_at": t.CreatedAt})
+		var wfName string
+		var wf model.Workflow
+		if err := a.DB.First(&wf, "id = ?", t.WorkflowID).Error; err == nil {
+			wfName = wf.Name
+		}
+		out = append(out, gin.H{
+			"id": t.ID.String(), "workflow_id": t.WorkflowID.String(), "workflow_name": wfName,
+			"workflow_version": t.WorkflowVersion, "owner_id": t.OwnerID.String(),
+			"input_params": json.RawMessage(t.InputParams), "mode": t.Mode, "status": t.Status,
+			"report_id": t.ReportID, "error_message": t.ErrorMessage, "error_step_id": t.ErrorStepID,
+			"started_at": t.StartedAt, "finished_at": t.FinishedAt, "duration_ms": t.DurationMS,
+			"created_at": t.CreatedAt, "updated_at": t.UpdatedAt,
+		})
 	}
 	response.OKMeta(c, out, pagination.Meta(p, total))
 }

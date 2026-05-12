@@ -35,23 +35,41 @@ func (a *App) PatchSystemConfig(c *gin.Context) {
 	response.OK(c, gin.H{"ok": true})
 }
 
+// Dashboard returns dashboard statistics for the current user.
 func (a *App) Dashboard(c *gin.Context) {
 	var tasks, wfs, agents, reports int64
 	since := time.Now().Add(-24 * time.Hour)
-	_ = a.DB.Model(&model.Task{}).Count(&tasks).Error
-	_ = a.DB.Model(&model.Workflow{}).Count(&wfs).Error
-	_ = a.DB.Model(&model.Agent{}).Count(&agents).Error
-	_ = a.DB.Model(&model.Report{}).Count(&reports).Error
+	ownerID := uid(c)
+	_ = a.DB.Model(&model.Task{}).Where("owner_id = ?", ownerID).Count(&tasks).Error
+	_ = a.DB.Model(&model.Workflow{}).Where("owner_id = ?", ownerID).Count(&wfs).Error
+	_ = a.DB.Model(&model.Agent{}).Where("owner_id = ?", ownerID).Count(&agents).Error
+	_ = a.DB.Model(&model.Report{}).Where("owner_id = ?", ownerID).Count(&reports).Error
+	var runningCnt int64
+	_ = a.DB.Model(&model.Task{}).Where("owner_id = ? AND status = ?", ownerID, "running").Count(&runningCnt).Error
 	var okCnt, allCnt int64
-	_ = a.DB.Model(&model.Task{}).Where("created_at >= ?", since).Count(&allCnt).Error
-	_ = a.DB.Model(&model.Task{}).Where("created_at >= ? AND status = ?", since, "completed").Count(&okCnt).Error
+	_ = a.DB.Model(&model.Task{}).Where("owner_id = ? AND created_at >= ?", ownerID, since).Count(&allCnt).Error
+	_ = a.DB.Model(&model.Task{}).Where("owner_id = ? AND created_at >= ? AND status = ?", ownerID, since, "completed").Count(&okCnt).Error
 	var rate float64
 	if allCnt > 0 {
-		rate = float64(okCnt) / float64(allCnt)
+		rate = float64(okCnt) / float64(allCnt) * 100
+	}
+	var recentTasks []model.Task
+	_ = a.DB.Where("owner_id = ?", ownerID).Order("created_at desc").Limit(10).Find(&recentTasks).Error
+	recentOut := make([]gin.H, 0, len(recentTasks))
+	for _, t := range recentTasks {
+		var wfName string
+		var wf model.Workflow
+		if err := a.DB.First(&wf, "id = ?", t.WorkflowID).Error; err == nil {
+			wfName = wf.Name
+		}
+		recentOut = append(recentOut, gin.H{
+			"id": t.ID.String(), "workflow_name": wfName, "status": t.Status,
+			"duration_ms": t.DurationMS, "created_at": t.CreatedAt,
+		})
 	}
 	response.OK(c, gin.H{
-		"tasks_total": tasks, "workflows_total": wfs, "agents_total": agents, "reports_total": reports,
-		"last_24h_success_rate": rate,
+		"workflow_count": wfs, "agent_count": agents, "task_running_count": runningCnt,
+		"report_count": reports, "success_rate_24h": rate, "recent_tasks": recentOut,
 	})
 }
 

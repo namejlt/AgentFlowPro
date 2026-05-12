@@ -1,7 +1,7 @@
 import http from './http'
 import type { ApiResponse, DataSourceItem, PaginationParams, ParamSchema } from '@/types'
 
-export function getDataSources(params?: PaginationParams & { ds_type?: string; category?: string }) {
+export function getDataSources(params?: PaginationParams & { type?: string; category?: string }) {
   return http.get<ApiResponse<DataSourceItem[]>>('/api/v1/datasources', { params })
 }
 
@@ -30,7 +30,7 @@ export function patchDataSourceStatus(id: string, enabled: boolean) {
 }
 
 export function testDataSource(id: string, params?: ParamSchema[]) {
-  return http.post<ApiResponse<{ status: string; data?: any; error?: string }>>(`/api/v1/datasources/${id}/test`, { params })
+  return http.post<ApiResponse<{ ok: boolean; extracted?: string; raw?: string; from_cache?: boolean; error?: string }>>(`/api/v1/datasources/${id}/test`, { params })
 }
 
 export function uploadFile(formData: FormData) {

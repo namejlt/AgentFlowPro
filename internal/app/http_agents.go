@@ -19,18 +19,18 @@ import (
 )
 
 type agentDTO struct {
-	Name           string         `json:"name"`
-	RoleDesc       *string        `json:"role_desc"`
-	Tags           []string       `json:"tags"`
-	Icon           *string        `json:"icon"`
-	SystemPrompt   string         `json:"system_prompt"`
-	LLMModelID     *uuid.UUID     `json:"llm_model_id"`
-	DataSourceID   *uuid.UUID     `json:"datasource_id"`
-	ParamMappings  []any          `json:"param_mappings"`
-	OutputFormat   string         `json:"output_format"`
-	OutputLang     string         `json:"output_lang"`
-	MaxOutputChars int            `json:"max_output_chars"`
-	Enabled        *bool          `json:"enabled"`
+	Name           string     `json:"name"`
+	RoleDesc       *string    `json:"role_desc"`
+	Tags           []string   `json:"tags"`
+	Icon           *string    `json:"icon"`
+	SystemPrompt   string     `json:"system_prompt"`
+	LLMModelID     *uuid.UUID `json:"llm_model_id"`
+	DataSourceID   *uuid.UUID `json:"datasource_id"`
+	ParamMappings  []any      `json:"param_mappings"`
+	OutputFormat   string     `json:"output_format"`
+	OutputLang     string     `json:"output_lang"`
+	MaxOutputChars int        `json:"max_output_chars"`
+	Enabled        *bool      `json:"enabled"`
 }
 
 func (a *App) CreateAgent(c *gin.Context) {
@@ -122,12 +122,16 @@ func (a *App) DeleteAgent(c *gin.Context) {
 	response.OK(c, gin.H{"ok": true})
 }
 
+// ListAgents returns a paginated list of agents for the current user.
 func (a *App) ListAgents(c *gin.Context) {
 	p := pagination.FromQuery(c)
 	var list []model.Agent
 	q := a.DB.Model(&model.Agent{}).Where("owner_id = ?", uid(c))
 	if kw := p.Keyword; kw != "" {
 		q = q.Where("name ILIKE ?", "%"+kw+"%")
+	}
+	if en := c.Query("enabled"); en != "" {
+		q = q.Where("enabled = ?", en == "true")
 	}
 	var total int64
 	_ = q.Count(&total).Error
@@ -244,7 +248,7 @@ func (a *App) PreviewAgent(c *gin.Context) {
 	resp, err := client.Chat(c.Request.Context(), llm.ChatOpts{
 		Endpoint: mo.Endpoint, APIKey: string(key), Model: mo.ModelID,
 		Messages: []llm.Message{{Role: "system", Content: prompt}, {Role: "user", Content: "请输出预览结果。"}},
-		Temp: mo.Temperature, MaxTokens: minInt(mo.MaxTokens, ag.MaxOutputChars), Timeout: durationFromMS(mo.TimeoutMS), Retries: 0, Stream: false,
+		Temp:     mo.Temperature, MaxTokens: minInt(mo.MaxTokens, ag.MaxOutputChars), Timeout: durationFromMS(mo.TimeoutMS), Retries: 0, Stream: false,
 	})
 	if err != nil {
 		response.Fail(c, apperr.ErrUpstream)

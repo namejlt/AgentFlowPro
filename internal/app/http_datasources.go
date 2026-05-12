@@ -284,12 +284,16 @@ func (a *App) TestDatasource(c *gin.Context) {
 	response.OK(c, gin.H{"ok": true, "extracted": res.Extracted, "raw": string(res.Raw), "from_cache": res.FromCache})
 }
 
+// ListDatasources returns a paginated list of data sources for the current user.
 func (a *App) ListDatasources(c *gin.Context) {
 	p := pagination.FromQuery(c)
 	var list []model.DataSource
 	q := a.DB.Model(&model.DataSource{}).Where("owner_id = ?", uid(c))
 	if t := c.Query("type"); t != "" {
 		q = q.Where("ds_type = ?", t)
+	}
+	if cat := c.Query("category"); cat != "" {
+		q = q.Where("category = ?", cat)
 	}
 	if kw := p.Keyword; kw != "" {
 		q = q.Where("name ILIKE ?", "%"+kw+"%")

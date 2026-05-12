@@ -189,7 +189,7 @@
     </el-card>
 
     <el-dialog v-model="testResultVisible" title="测试结果" width="500px">
-      <el-alert v-if="testResult.status === 'success'" title="测试通过" type="success" :closable="false" />
+      <el-alert v-if="testResult.ok" title="测试通过" type="success" :closable="false" />
       <el-alert v-else :title="`测试失败: ${testResult.error}`" type="error" :closable="false" />
       <div v-if="testResult.data" style="margin-top: 12px">
         <pre style="background: #f5f7fa; padding: 12px; border-radius: 4px; max-height: 300px; overflow: auto; font-size: 12px">{{ JSON.stringify(testResult.data, null, 2) }}</pre>
@@ -221,7 +221,7 @@ const bodyTemplateStr = ref('')
 const manualContent = ref('')
 const uploadFileId = ref('')
 const testResultVisible = ref(false)
-const testResult = reactive({ status: '', error: '', data: null as any })
+const testResult = reactive({ ok: false, error: '', data: null as any })
 
 const form = reactive<Partial<DataSourceItem>>({
   name: '',
@@ -274,9 +274,9 @@ async function handleTest() {
   }
   try {
     const res = await testDataSource(route.params.id as string)
-    testResult.status = res.data.data.status
+    testResult.ok = res.data.data.ok
     testResult.error = res.data.data.error || ''
-    testResult.data = res.data.data.data
+    testResult.data = res.data.data.extracted || res.data.data.raw
     testResultVisible.value = true
   } catch {}
 }

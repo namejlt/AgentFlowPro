@@ -139,6 +139,7 @@ func (a *App) GetModel(c *gin.Context) {
 	response.OK(c, a.toLLMView(&m, false))
 }
 
+// TestModel tests the connectivity of an LLM model by sending a ping request.
 func (a *App) TestModel(c *gin.Context) {
 	id, err := parseUUID(c.Param("id"))
 	if err != nil {
@@ -152,21 +153,22 @@ func (a *App) TestModel(c *gin.Context) {
 	}
 	key, err := crypto.Open(a.Cfg.EncryptionKey, m.APIKeyEncrypted)
 	if err != nil {
-		response.Fail(c, apperr.ErrInternal)
+		response.OK(c, gin.H{"success": false, "latency_ms": 0, "error": "解密 API Key 失败: " + err.Error()})
 		return
 	}
-	start := gin.H{"ok": true}
+	start := time.Now()
 	client := llm.NewClient()
 	_, err = client.Chat(c.Request.Context(), llm.ChatOpts{
 		Endpoint: m.Endpoint, APIKey: string(key), Model: m.ModelID,
 		Messages: []llm.Message{{Role: "user", Content: "ping"}},
 		Temp: 0, MaxTokens: 8, Timeout: 15 * time.Second, Retries: 0, Stream: false,
 	})
+	latency := time.Since(start).Milliseconds()
 	if err != nil {
-		response.OK(c, gin.H{"ok": false, "error": err.Error(), "started": start})
+		response.OK(c, gin.H{"success": false, "latency_ms": latency, "error": err.Error()})
 		return
 	}
-	response.OK(c, gin.H{"ok": true})
+	response.OK(c, gin.H{"success": true, "latency_ms": latency})
 }
 
 func (a *App) SetDefaultModel(c *gin.Context) {
@@ -193,8 +195,10 @@ func (a *App) toLLMView(m *model.LLMModel, includeSecrets bool) gin.H {
 		if plain, err := crypto.Open(a.Cfg.EncryptionKey, m.APIKeyEncrypted); err == nil {
 			h["api_key"] = string(plain)
 		}
+		h["api_key_masked"] = "****"
 	} else {
 		h["api_key"] = "****"
+		h["api_key_masked"] = "****"
 	}
 	return h
 }

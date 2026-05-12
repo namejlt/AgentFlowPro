@@ -13,6 +13,7 @@ import (
 	"github.com/namejlt/AgentFlowPro/internal/pkg/response"
 )
 
+// ListReports returns a paginated list of reports for the current user.
 func (a *App) ListReports(c *gin.Context) {
 	p := pagination.FromQuery(c)
 	var list []model.Report
@@ -30,11 +31,23 @@ func (a *App) ListReports(c *gin.Context) {
 	}
 	out := make([]gin.H, 0, len(list))
 	for _, r := range list {
-		out = append(out, gin.H{"id": r.ID.String(), "title": r.Title, "workflow_id": r.WorkflowID.String(), "status": r.Status, "archived": r.Archived, "created_at": r.CreatedAt})
+		var wfName string
+		var wf model.Workflow
+		if err := a.DB.First(&wf, "id = ?", r.WorkflowID).Error; err == nil {
+			wfName = wf.Name
+		}
+		out = append(out, gin.H{
+			"id": r.ID.String(), "task_id": r.TaskID.String(), "title": r.Title,
+			"workflow_id": r.WorkflowID.String(), "workflow_name": wfName,
+			"owner_id": r.OwnerID.String(), "status": r.Status, "archived": r.Archived,
+			"total_tokens": r.TotalTokens, "duration_ms": r.DurationMS,
+			"created_at": r.CreatedAt, "updated_at": r.UpdatedAt,
+		})
 	}
 	response.OKMeta(c, out, pagination.Meta(p, total))
 }
 
+// GetReport returns a single report by ID for the current user.
 func (a *App) GetReport(c *gin.Context) {
 	id, err := parseUUID(c.Param("id"))
 	if err != nil {
@@ -46,10 +59,21 @@ func (a *App) GetReport(c *gin.Context) {
 		response.Fail(c, apperr.ErrNotFound)
 		return
 	}
+	var wfName string
+	var wf model.Workflow
+	if err := a.DB.First(&wf, "id = ?", r.WorkflowID).Error; err == nil {
+		wfName = wf.Name
+	}
 	response.OK(c, gin.H{
-		"id": r.ID.String(), "title": r.Title, "content_md": r.ContentMD, "workflow_id": r.WorkflowID.String(), "task_id": r.TaskID.String(),
-		"agent_outputs": r.AgentOutputs, "debate_logs": r.DebateLogs, "risk_reviews": r.RiskReviews, "exec_logs": r.ExecLogs,
-		"input_snapshot": r.InputSnapshot, "status": r.Status, "archived": r.Archived, "duration_ms": r.DurationMS,
+		"id": r.ID.String(), "task_id": r.TaskID.String(), "title": r.Title,
+		"workflow_id": r.WorkflowID.String(), "workflow_name": wfName,
+		"owner_id": r.OwnerID.String(), "content_md": r.ContentMD,
+		"agent_outputs": r.AgentOutputs, "debate_logs": r.DebateLogs,
+		"risk_reviews": r.RiskReviews, "exec_logs": r.ExecLogs,
+		"input_snapshot": r.InputSnapshot, "status": r.Status,
+		"archived": r.Archived, "total_tokens": r.TotalTokens,
+		"duration_ms": r.DurationMS, "created_at": r.CreatedAt,
+		"updated_at": r.UpdatedAt,
 	})
 }
 

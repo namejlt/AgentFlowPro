@@ -110,7 +110,7 @@ function authTypeLabel(type: string) {
 
 async function fetchList() {
   try {
-    const res = await getDataSources({ page: page.value, page_size: pageSize.value, keyword: keyword.value, ds_type: filterType.value || undefined, category: filterCategory.value || undefined })
+    const res = await getDataSources({ page: page.value, page_size: pageSize.value, keyword: keyword.value, type: filterType.value || undefined, category: filterCategory.value || undefined })
     datasources.value = res.data.data || []
     total.value = res.data.meta?.total || 0
   } catch {}
@@ -127,7 +127,7 @@ function handleEdit(ds: DataSourceItem) {
 async function handleTest(ds: DataSourceItem) {
   try {
     const res = await testDataSource(ds.id)
-    if (res.data.data.status === 'success') {
+    if (res.data.data.ok) {
       ElMessage.success('测试通过')
     } else {
       ElMessage.error(`测试失败: ${res.data.data.error || '未知错误'}`)

@@ -42,8 +42,11 @@ func main() {
 
 	gin.SetMode(cfg.GinMode)
 	r := gin.New()
+	if cfg.GinMode != gin.ReleaseMode {
+		r.Use(gin.Logger())
+		r.Use(gin.Recovery())
+	}
 	api.Register(r, a)
-
 	srv := a.HTTPServer(r, cfg.HTTPAddr)
 
 	go func() {

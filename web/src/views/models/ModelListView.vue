@@ -15,7 +15,7 @@
         <el-table-column prop="endpoint" label="Endpoint" min-width="200" show-overflow-tooltip />
         <el-table-column label="API Key" width="140">
           <template #default="{ row }">
-            <span class="masked-key">{{ row.api_key_masked || '****' }}</span>
+            <span class="masked-key">{{ row.api_key === '****' ? '****' : (row.api_key_masked || '****') }}</span>
           </template>
         </el-table-column>
         <el-table-column prop="temperature" label="Temperature" width="110" />

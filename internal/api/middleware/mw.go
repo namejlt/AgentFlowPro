@@ -40,12 +40,18 @@ type JWTConfig struct {
 func JWT(cfg JWTConfig) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		h := c.GetHeader("Authorization")
-		if h == "" || !strings.HasPrefix(strings.ToLower(h), "bearer ") {
+		if h == "" {
 			response.Fail(c, apperr.ErrUnauthorized)
 			c.Abort()
 			return
 		}
-		tok := strings.TrimSpace(h[7:])
+		parts := strings.SplitN(h, " ", 2)
+		if len(parts) != 2 || strings.ToLower(parts[0]) != "bearer" {
+			response.Fail(c, apperr.ErrUnauthorized)
+			c.Abort()
+			return
+		}
+		tok := strings.TrimSpace(parts[1])
 		cl, err := auth.ParseJWT(cfg.Secret, tok)
 		if err != nil {
 			response.Fail(c, apperr.ErrUnauthorized)
