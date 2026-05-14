@@ -5,7 +5,7 @@ import router from '@/router'
 
 const http = axios.create({
   baseURL: '',
-  timeout: 30000,
+  timeout: 300000,
   headers: { 'Content-Type': 'application/json' },
 })
 
@@ -21,21 +21,25 @@ http.interceptors.response.use(
   (response) => {
     const data = response.data as ApiResponse
     if (data.code !== 0) {
-      ElMessage.error(data.message || '请求失败')
       if (data.code === 1002) {
         localStorage.removeItem('token')
         router.push('/login')
       }
-      return Promise.reject(new Error(data.message))
+      const err = new Error(data.message || '请求失败') as any
+      err.handled = true
+      return Promise.reject(err)
     }
     return response
   },
   (error) => {
+    if (error.handled) {
+      return Promise.reject(error)
+    }
     if (error.response?.status === 401) {
       localStorage.removeItem('token')
       router.push('/login')
+      return Promise.reject(error)
     }
-    ElMessage.error(error.response?.data?.message || error.message || '网络错误')
     return Promise.reject(error)
   }
 )

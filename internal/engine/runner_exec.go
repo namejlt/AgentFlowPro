@@ -19,14 +19,15 @@ import (
 	"github.com/namejlt/AgentFlowPro/internal/templatex"
 )
 
+// executeNode executes a single workflow node and returns its output.
 func (r *Runner) executeNode(ctx context.Context, taskID uuid.UUID, wf *model.Workflow, g *Graph, node FlowNode, store *runStore, emit func(string, any)) (string, string, error) {
 	stepID := uuid.New()
 	ts := model.TaskStep{
-		ID:       stepID,
-		TaskID:   taskID,
-		NodeID:   node.ID,
-		NodeType: node.Type,
-		Status:   "running",
+		ID:        stepID,
+		TaskID:    taskID,
+		NodeID:    node.ID,
+		NodeType:  node.Type,
+		Status:    "running",
 		StartedAt: ptrTime(time.Now()),
 	}
 	_ = r.Store.DB.Create(&ts).Error
@@ -39,15 +40,20 @@ func (r *Runner) executeNode(ctx context.Context, taskID uuid.UUID, wf *model.Wo
 	switch node.Type {
 	case "start":
 		out = "started"
+		store.log("INFO", node.ID, "workflow started")
 	case "end":
 		titleTpl, _ := node.Data["title_template"].(string)
 		title := templatex.Render(titleTpl, store.flatVars())
+		if title == "" {
+			title = wf.Name + " 报告"
+		}
 		store.setKV("report:title", title)
 		out = title
+		store.log("INFO", node.ID, "workflow finished")
 	case "agent_run":
 		aid := uuidFromAny(node.Data["agent_id"])
 		if aid == uuid.Nil {
-			err = fmt.Errorf("agent_run missing agent_id")
+			err = fmt.Errorf("agent_run node missing agent_id")
 			break
 		}
 		ts.AgentID = &aid
@@ -63,10 +69,14 @@ func (r *Runner) executeNode(ctx context.Context, taskID uuid.UUID, wf *model.Wo
 		out, err = r.runRiskReview(ctx, wf, node, store, emit)
 	case "condition":
 		expr, _ := node.Data["expression"].(string)
+		if expr == "" {
+			expr, _ = node.Data["condition"].(string)
+		}
 		label := templatex.Render(expr, store.flatVars())
 		store.setKV("__branch__", label)
 		out = label
 		nextLabel = label
+		store.log("INFO", node.ID, fmt.Sprintf("condition evaluated to: %s", label))
 	case "summarize":
 		out, err = r.runSummarize(ctx, wf, node, store, emit)
 	case "transform":
@@ -147,61 +157,67 @@ func (r *Runner) decryptAPIKey(sealed string) (string, error) {
 	return string(b), nil
 }
 
+// resolveModelID resolves the LLM model for an agent, falling back to workflow default.
 func (r *Runner) resolveModelID(wf *model.Workflow, agent *model.Agent) (*model.LLMModel, error) {
 	var m model.LLMModel
 	switch {
 	case agent.LLMModelID != nil:
 		if err := r.Store.DB.First(&m, "id = ?", *agent.LLMModelID).Error; err != nil {
-			return nil, err
+			return nil, fmt.Errorf("agent model not found: %w", err)
 		}
 		return &m, nil
 	case wf.DefaultModelID != nil:
 		if err := r.Store.DB.First(&m, "id = ?", *wf.DefaultModelID).Error; err != nil {
-			return nil, err
+			return nil, fmt.Errorf("workflow default model not found: %w", err)
 		}
 		return &m, nil
 	default:
 		if err := r.Store.DB.Where("is_default = ? AND deleted_at IS NULL", true).First(&m).Error; err != nil {
-			return nil, err
+			return nil, fmt.Errorf("no default model found: %w", err)
 		}
 		return &m, nil
 	}
 }
 
+// runAgentNode executes an agent_run node: fetches data, renders prompt, calls LLM.
 func (r *Runner) runAgentNode(ctx context.Context, taskID uuid.UUID, wf *model.Workflow, node FlowNode, store *runStore, agentID uuid.UUID, emit func(string, any)) (string, error) {
 	var ag model.Agent
 	if err := r.Store.DB.First(&ag, "id = ?", agentID).Error; err != nil {
-		return "", err
+		return "", fmt.Errorf("agent not found: %w", err)
 	}
 	if !ag.Enabled {
-		return "", fmt.Errorf("agent disabled")
+		return "", fmt.Errorf("agent %s is disabled", ag.Name)
 	}
+
 	mo, err := r.resolveModelID(wf, &ag)
 	if err != nil {
 		return "", err
 	}
+
 	apiKey, err := r.decryptAPIKey(mo.APIKeyEncrypted)
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("decrypt api key failed: %w", err)
 	}
 
-	// datasource
+	// Execute datasource if bound
 	dsText := ""
 	if ag.DataSourceID != nil {
 		var ds model.DataSource
 		if err := r.Store.DB.First(&ds, "id = ?", *ag.DataSourceID).Error; err == nil {
 			params, err := datasource.ResolveParams(ds.ParamsSchema, store.global, map[string]any{})
 			if err != nil {
-				return "", err
+				return "", fmt.Errorf("resolve datasource params failed: %w", err)
 			}
 			res, err := r.DS.Execute(ctx, &ds, datasource.ExecuteInput{GlobalVars: store.global, Params: params}, r.decryptHeaders, r.decryptAuth)
 			if err != nil {
-				return "", err
+				return "", fmt.Errorf("datasource execution failed: %w", err)
 			}
 			dsText = res.Extracted
+			store.log("INFO", node.ID, fmt.Sprintf("datasource extracted %d chars", len(dsText)))
 		}
 	}
 
+	// Build prompt variables from globals + stored node outputs
 	extras := map[string]string{
 		"datasource.result": dsText,
 	}
@@ -210,13 +226,22 @@ func (r *Runner) runAgentNode(ctx context.Context, taskID uuid.UUID, wf *model.W
 	}
 	prompt := templatex.Render(ag.SystemPrompt, templatex.MergeStringMap(templatex.BuildPromptVarMap(store.global, nil), extras))
 
+	// Build messages: system prompt + datasource data injected as user content
 	messages := []llm.Message{
 		{Role: "system", Content: prompt},
-		{Role: "user", Content: "请根据系统指令输出分析结果。"},
 	}
+	userContent := "请根据系统指令输出分析结果。"
+	if dsText != "" {
+		userContent = fmt.Sprintf("以下是本次分析所需的数据:\n\n%s\n\n请根据系统指令输出分析结果。", dsText)
+	}
+	messages = append(messages, llm.Message{Role: "user", Content: userContent})
 
 	stepID := uuid.NewString()
-	emit("agent_stream_start", map[string]any{"step_id": stepID, "agent_id": agentID.String(), "agent_name": ag.Name})
+	emit("agent_stream_start", map[string]any{
+		"step_id":    stepID,
+		"agent_id":   agentID.String(),
+		"agent_name": ag.Name,
+	})
 
 	var acc strings.Builder
 	stream := mo.StreamEnabled
@@ -233,24 +258,38 @@ func (r *Runner) runAgentNode(ctx context.Context, taskID uuid.UUID, wf *model.W
 		OnChunk: func(c llm.StreamChunk) error {
 			if c.Delta != "" {
 				acc.WriteString(c.Delta)
-				emit("agent_stream_chunk", map[string]any{"step_id": stepID, "chunk": c.Delta, "accumulated": acc.String()})
+				emit("agent_stream_chunk", map[string]any{
+					"step_id":     stepID,
+					"chunk":       c.Delta,
+					"accumulated": acc.String(),
+				})
 			}
 			return nil
 		},
 	})
 	if err != nil {
-		emit("agent_stream_end", map[string]any{"step_id": stepID, "full_output": acc.String(), "tokens_used": 0})
+		emit("agent_stream_end", map[string]any{
+			"step_id":     stepID,
+			"full_output": acc.String(),
+			"tokens_used": 0,
+			"error":       err.Error(),
+		})
 		return "", err
 	}
 	out := resp.Content
 	if stream && out == "" {
 		out = acc.String()
 	}
-	emit("agent_stream_end", map[string]any{"step_id": stepID, "full_output": out, "tokens_used": resp.Tokens})
+	emit("agent_stream_end", map[string]any{
+		"step_id":     stepID,
+		"full_output": out,
+		"tokens_used": resp.Tokens,
+	})
 	store.setAgentOutput(agentID, out)
 	return out, nil
 }
 
+// runParallel executes multiple agents in parallel.
 func (r *Runner) runParallel(ctx context.Context, taskID uuid.UUID, wf *model.Workflow, node FlowNode, store *runStore, emit func(string, any)) (string, error) {
 	mode, _ := node.Data["mode"].(string)
 	wait := "all"
@@ -273,7 +312,11 @@ func (r *Runner) runParallel(ctx context.Context, taskID uuid.UUID, wf *model.Wo
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
-				txt, err := r.runAgentNode(ctx, taskID, wf, FlowNode{ID: node.ID + ":" + aid.String(), Type: "agent_run", Data: map[string]any{"agent_id": aid.String()}}, store, aid, emit)
+				txt, err := r.runAgentNode(ctx, taskID, wf, FlowNode{
+					ID:   node.ID + ":" + aid.String(),
+					Type: "agent_run",
+					Data: map[string]any{"agent_id": aid.String()},
+				}, store, aid, emit)
 				if err != nil {
 					eMu.Lock()
 					errList = append(errList, err)
@@ -287,15 +330,17 @@ func (r *Runner) runParallel(ctx context.Context, taskID uuid.UUID, wf *model.Wo
 		}
 		wg.Wait()
 	} else {
-		// graph downstream: run all successor agent_run nodes in parallel by graph
-		// handled by workflow graph itself usually; here treat as agents list from child_node_ids
 		ids := toUUIDSlice(node.Data["child_agent_ids"])
 		for _, aid := range ids {
 			aid := aid
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
-				txt, err := r.runAgentNode(ctx, taskID, wf, FlowNode{ID: node.ID + ":" + aid.String(), Type: "agent_run", Data: map[string]any{"agent_id": aid.String()}}, store, aid, emit)
+				txt, err := r.runAgentNode(ctx, taskID, wf, FlowNode{
+					ID:   node.ID + ":" + aid.String(),
+					Type: "agent_run",
+					Data: map[string]any{"agent_id": aid.String()},
+				}, store, aid, emit)
 				if err != nil {
 					eMu.Lock()
 					errList = append(errList, err)
@@ -309,8 +354,9 @@ func (r *Runner) runParallel(ctx context.Context, taskID uuid.UUID, wf *model.Wo
 		}
 		wg.Wait()
 	}
-	if wait == "any" {
-		// simplified: still wait all goroutines
+	if wait == "any" && len(parts) > 0 {
+		// Return first successful result
+		return parts[0], nil
 	}
 	if len(errList) > 0 {
 		return "", errList[0]
@@ -321,6 +367,17 @@ func (r *Runner) runParallel(ctx context.Context, taskID uuid.UUID, wf *model.Wo
 func toUUIDSlice(v any) []uuid.UUID {
 	arr, ok := v.([]any)
 	if !ok {
+		// Try string slice
+		if sarr, ok := v.([]string); ok {
+			var out []uuid.UUID
+			for _, s := range sarr {
+				id := uuidFromAny(s)
+				if id != uuid.Nil {
+					out = append(out, id)
+				}
+			}
+			return out
+		}
 		return nil
 	}
 	var out []uuid.UUID
@@ -333,6 +390,7 @@ func toUUIDSlice(v any) []uuid.UUID {
 	return out
 }
 
+// runDebate executes a multi-round debate between agents.
 func (r *Runner) runDebate(ctx context.Context, taskID uuid.UUID, wf *model.Workflow, node FlowNode, store *runStore, emit func(string, any)) (string, error) {
 	ids := toUUIDSlice(node.Data["agent_ids"])
 	if len(ids) == 0 {
@@ -341,6 +399,9 @@ func (r *Runner) runDebate(ctx context.Context, taskID uuid.UUID, wf *model.Work
 	maxR := 3
 	if v, ok := node.Data["max_rounds"].(float64); ok {
 		maxR = int(v)
+	}
+	if v, ok := node.Data["max_rounds"].(int); ok {
+		maxR = v
 	}
 	if maxR < 1 {
 		maxR = 1
@@ -351,6 +412,13 @@ func (r *Runner) runDebate(ctx context.Context, taskID uuid.UUID, wf *model.Work
 	stopConsensus, _ := node.Data["stop_on_consensus"].(bool)
 
 	lastRound := map[string]string{}
+	agentNames := map[string]string{} // agent_id -> name, loaded once
+	for _, aid := range ids {
+		var ag model.Agent
+		if err := r.Store.DB.First(&ag, "id = ?", aid).Error; err == nil {
+			agentNames[aid.String()] = ag.Name
+		}
+	}
 	for round := 1; round <= maxR; round++ {
 		roundOutputs := map[string]string{}
 		var wg sync.WaitGroup
@@ -363,14 +431,17 @@ func (r *Runner) runDebate(ctx context.Context, taskID uuid.UUID, wf *model.Work
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
-				// build context from other agents last round
 				others := ""
 				if round > 1 {
 					for oid, txt := range lastRound {
 						if oid == aid.String() {
 							continue
 						}
-						others += fmt.Sprintf("【对手 %s 上轮结论】\n%s\n\n", oid, txt)
+						name := agentNames[oid]
+						if name == "" {
+							name = oid
+						}
+						others += fmt.Sprintf("【对手 %s 上轮结论】\n%s\n\n", name, txt)
 					}
 				}
 				var ag model.Agent
@@ -394,14 +465,21 @@ func (r *Runner) runDebate(ctx context.Context, taskID uuid.UUID, wf *model.Work
 					eMu.Unlock()
 					return
 				}
-				prompt := templatex.Render(ag.SystemPrompt, templatex.MergeStringMap(templatex.BuildPromptVarMap(store.global, nil), map[string]string{
-					"debate.others_last": others,
-					"debate.round":       fmt.Sprint(round),
-				}))
-				msgs := []llm.Message{{Role: "system", Content: prompt}, {Role: "user", Content: "请输出本轮辩论结论。"}}
+				prompt := templatex.Render(ag.SystemPrompt, templatex.MergeStringMap(
+					templatex.BuildPromptVarMap(store.global, nil),
+					map[string]string{
+						"debate.others_last": others,
+						"debate.round":       fmt.Sprint(round),
+					},
+				))
+				msgs := []llm.Message{
+					{Role: "system", Content: prompt},
+					{Role: "user", Content: "请输出本轮辩论结论。"},
+				}
 				resp, err := r.LLM.Chat(ctx, llm.ChatOpts{
 					Endpoint: mo.Endpoint, APIKey: apiKey, Model: mo.ModelID, Messages: msgs,
-					Temp: mo.Temperature, MaxTokens: mo.MaxTokens, Timeout: time.Duration(mo.TimeoutMS) * time.Millisecond,
+					Temp: mo.Temperature, MaxTokens: mo.MaxTokens,
+					Timeout: time.Duration(mo.TimeoutMS) * time.Millisecond,
 					Retries: mo.RetryCount, Stream: false,
 				})
 				if err != nil {
@@ -421,8 +499,23 @@ func (r *Runner) runDebate(ctx context.Context, taskID uuid.UUID, wf *model.Work
 		}
 		lastRound = roundOutputs
 		store.appendDebate(map[string]any{"node_id": node.ID, "round": round, "outputs": roundOutputs})
-		emit("debate_round", map[string]any{"node_id": node.ID, "round": round, "agent_outputs": roundOutputs})
+		// Build array-format debate round for frontend display
+		debateEntries := make([]map[string]any, 0, len(roundOutputs))
+		for aid, output := range roundOutputs {
+			name := agentNames[aid]
+			if name == "" {
+				name = aid
+			}
+			debateEntries = append(debateEntries, map[string]any{
+				"agent_id":   aid,
+				"agent_name": name,
+				"output":     output,
+				"round":      round,
+			})
+		}
+		emit("debate_round", map[string]any{"node_id": node.ID, "round": round, "agent_outputs": debateEntries})
 		if stopConsensus && consensus(roundOutputs) {
+			store.log("INFO", node.ID, fmt.Sprintf("debate consensus reached at round %d", round))
 			break
 		}
 	}
@@ -450,6 +543,7 @@ func consensus(m map[string]string) bool {
 	return true
 }
 
+// runCrossValidate validates consistency across multiple agent outputs.
 func (r *Runner) runCrossValidate(ctx context.Context, wf *model.Workflow, node FlowNode, store *runStore, emit func(string, any)) (string, error) {
 	ids := toUUIDSlice(node.Data["agent_ids"])
 	var sb strings.Builder
@@ -457,7 +551,6 @@ func (r *Runner) runCrossValidate(ctx context.Context, wf *model.Workflow, node 
 		txt := store.getString("agent:" + aid.String() + ":output")
 		sb.WriteString(fmt.Sprintf("【%s】\n%s\n", aid.String(), txt))
 	}
-	// optional LLM summarization
 	sys := "你是交叉验证专家，请检测上述结论的一致性、矛盾点并输出结构化结论。"
 	if v, ok := node.Data["prompt"].(string); ok && v != "" {
 		sys = templatex.Render(v, store.flatVars())
@@ -479,10 +572,11 @@ func (r *Runner) runCrossValidate(ctx context.Context, wf *model.Workflow, node 
 	if err != nil {
 		return "", err
 	}
-	_ = emit
+	emit("cross_validate", map[string]any{"node_id": node.ID, "result": resp.Content})
 	return resp.Content, nil
 }
 
+// runRiskReview performs risk assessment on previous outputs.
 func (r *Runner) runRiskReview(ctx context.Context, wf *model.Workflow, node FlowNode, store *runStore, emit func(string, any)) (string, error) {
 	sys := "你是风险管理专家，请输出风险矩阵与等级（高/中/低）及建议。"
 	if v, ok := node.Data["prompt"].(string); ok && v != "" {
@@ -510,7 +604,7 @@ func (r *Runner) runRiskReview(ctx context.Context, wf *model.Workflow, node Flo
 		return "", err
 	}
 	store.appendRisk(map[string]any{"node_id": node.ID, "text": resp.Content})
-	_ = emit
+	emit("risk_review", map[string]any{"node_id": node.ID, "result": resp.Content})
 	return resp.Content, nil
 }
 
@@ -523,6 +617,7 @@ func collectAgentOutputs(store *runStore) []string {
 	return lines
 }
 
+// pickAnyModel picks any available model, preferring workflow default.
 func (r *Runner) pickAnyModel(wf *model.Workflow) (*model.LLMModel, error) {
 	if wf.DefaultModelID != nil {
 		var m model.LLMModel
@@ -537,6 +632,7 @@ func (r *Runner) pickAnyModel(wf *model.Workflow) (*model.LLMModel, error) {
 	return &m, nil
 }
 
+// runSummarize generates final summary report.
 func (r *Runner) runSummarize(ctx context.Context, wf *model.Workflow, node FlowNode, store *runStore, emit func(string, any)) (string, error) {
 	sys := "你是报告汇总专家，请输出最终 Markdown 报告。"
 	if v, ok := node.Data["prompt"].(string); ok && v != "" {
@@ -557,11 +653,15 @@ func (r *Runner) runSummarize(ctx context.Context, wf *model.Workflow, node Flow
 		Temp: 0.4, MaxTokens: mo.MaxTokens, Timeout: time.Duration(mo.TimeoutMS) * time.Millisecond,
 		Retries: mo.RetryCount, Stream: false,
 	})
-	_ = emit
+	if err != nil {
+		return "", err
+	}
+	emit("summarize", map[string]any{"node_id": node.ID, "result": resp.Content})
 	store.setKV("report:md", resp.Content)
 	return resp.Content, nil
 }
 
+// runTransform applies variable transformation rules.
 func (r *Runner) runTransform(node FlowNode, store *runStore) (string, error) {
 	rules, ok := node.Data["map"].(map[string]any)
 	if !ok {
@@ -576,6 +676,7 @@ func (r *Runner) runTransform(node FlowNode, store *runStore) (string, error) {
 	return string(b), nil
 }
 
+// finalizeSuccess creates report and updates task status on successful completion.
 func (r *Runner) finalizeSuccess(ctx context.Context, taskID uuid.UUID, wf *model.Workflow, t *model.Task, store *runStore, title string, dur int64) error {
 	glob, logs, debate, risk, agents := store.snapshot()
 	md := store.getString("report:md")

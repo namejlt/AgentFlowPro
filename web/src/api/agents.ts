@@ -25,6 +25,6 @@ export function deleteAgent(id: string) {
   return http.delete<ApiResponse<void>>(`/api/v1/agents/${id}`)
 }
 
-export function previewAgent(id: string, input?: Record<string, any>) {
-  return http.post<ApiResponse<{ output: string; tokens_used: number }>>(`/api/v1/agents/${id}/preview`, { input })
+export function previewAgent(id: string, globals?: Record<string, any>) {
+  return http.post<ApiResponse<{ output: string; tokens_used: number; error?: string }>>(`/api/v1/agents/${id}/preview`, { globals })
 }

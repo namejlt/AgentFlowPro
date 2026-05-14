@@ -45,6 +45,7 @@ func (a *App) CreateWorkflow(c *gin.Context) {
 		return
 	}
 	a.saveVersion(&wf, uid(c))
+	a.LogCreate(c, "workflow", wf.ID, gin.H{"name": wf.Name})
 	response.OK(c, a.toWFView(&wf))
 }
 
@@ -81,6 +82,7 @@ func (a *App) UpdateWorkflow(c *gin.Context) {
 		return
 	}
 	a.saveVersion(&wf, uid(c))
+	a.LogUpdate(c, "workflow", wf.ID, gin.H{"name": wf.Name})
 	response.OK(c, a.toWFView(&wf))
 }
 
@@ -133,6 +135,7 @@ func (a *App) DeleteWorkflow(c *gin.Context) {
 		response.Fail(c, apperr.ErrInternal)
 		return
 	}
+	a.LogDelete(c, "workflow", id, gin.H{})
 	response.OK(c, gin.H{"ok": true})
 }
 
@@ -186,7 +189,7 @@ func (a *App) toWFView(wf *model.Workflow) gin.H {
 		"global_params": json.RawMessage(wf.GlobalParams), "nodes": json.RawMessage(wf.Nodes), "edges": json.RawMessage(wf.Edges),
 		"exec_config": json.RawMessage(wf.ExecConfig), "default_model_id": wf.DefaultModelID, "version": wf.Version,
 		"visibility": wf.Visibility, "share_code": wf.ShareCode, "archived": wf.Archived, "last_run_at": wf.LastRunAt, "run_count": wf.RunCount,
-		"owner_id": wf.OwnerID.String(),
+		"owner_id": wf.OwnerID.String(), "created_at": wf.CreatedAt, "updated_at": wf.UpdatedAt,
 	}
 }
 
@@ -196,16 +199,23 @@ func (a *App) ListWorkflowVersions(c *gin.Context) {
 		response.Fail(c, apperr.ErrBadRequest)
 		return
 	}
+	p := pagination.FromQuery(c)
+	var total int64
+	_ = a.DB.Model(&model.WorkflowVersion{}).Where("workflow_id = ?", id).Count(&total).Error
 	var list []model.WorkflowVersion
-	if err := a.DB.Where("workflow_id = ?", id).Order("version desc").Find(&list).Error; err != nil {
+	if err := a.DB.Where("workflow_id = ?", id).Order("version desc").Offset(p.Offset).Limit(p.PageSize).Find(&list).Error; err != nil {
 		response.Fail(c, apperr.ErrInternal)
 		return
 	}
 	out := make([]gin.H, 0, len(list))
 	for _, v := range list {
-		out = append(out, gin.H{"version": v.Version, "created_at": v.CreatedAt, "snapshot": json.RawMessage(v.Snapshot)})
+		var createdBy string
+		if v.CreatedBy != nil {
+			createdBy = v.CreatedBy.String()
+		}
+		out = append(out, gin.H{"version": v.Version, "created_at": v.CreatedAt, "created_by": createdBy, "snapshot": json.RawMessage(v.Snapshot)})
 	}
-	response.OK(c, out)
+	response.OKMeta(c, out, pagination.Meta(p, total))
 }
 
 func (a *App) RollbackWorkflow(c *gin.Context) {
@@ -287,13 +297,61 @@ func (a *App) ImportWorkflow(c *gin.Context) {
 		response.Fail(c, apperr.ErrBadRequest)
 		return
 	}
-	match := gin.H{"matched": gin.H{}, "missing": gin.H{}}
+	match := a.buildMatchReport(body)
 	sess := model.WorkflowImportSession{OwnerID: uid(c), Payload: jbytes(body), MatchReport: jbytes(match), Status: "pending"}
 	if err := a.DB.Create(&sess).Error; err != nil {
 		response.Fail(c, apperr.ErrInternal)
 		return
 	}
 	response.OK(c, gin.H{"session_id": sess.ID.String(), "match_report": match})
+}
+
+func (a *App) buildMatchReport(payload map[string]any) gin.H {
+	matchedAgents := []gin.H{}
+	matchedDS := []gin.H{}
+	matchedModels := []gin.H{}
+	missingAgents := []gin.H{}
+	missingDS := []gin.H{}
+	missingModels := []gin.H{}
+
+	nodes, _ := payload["nodes"].([]any)
+	for _, n := range nodes {
+		node, _ := n.(map[string]any)
+		data, _ := node["data"].(map[string]any)
+		if agentID, ok := data["agent_id"].(string); ok {
+			var ag model.Agent
+			if err := a.DB.First(&ag, "id = ?", agentID).Error; err == nil {
+				matchedAgents = append(matchedAgents, gin.H{"import_id": agentID, "import_name": agentID, "local_id": ag.ID.String(), "local_name": ag.Name})
+			} else {
+				missingAgents = append(missingAgents, gin.H{"import_id": agentID, "import_name": agentID})
+			}
+		}
+		if agentIDs, ok := data["agent_ids"].([]any); ok {
+			for _, aid := range agentIDs {
+				idStr, _ := aid.(string)
+				var ag model.Agent
+				if err := a.DB.First(&ag, "id = ?", idStr).Error; err == nil {
+					matchedAgents = append(matchedAgents, gin.H{"import_id": idStr, "import_name": idStr, "local_id": ag.ID.String(), "local_name": ag.Name})
+				} else {
+					missingAgents = append(missingAgents, gin.H{"import_id": idStr, "import_name": idStr})
+				}
+			}
+		}
+	}
+
+	if defaultModelID, ok := payload["default_model_id"].(string); ok {
+		var mo model.LLMModel
+		if err := a.DB.First(&mo, "id = ?", defaultModelID).Error; err == nil {
+			matchedModels = append(matchedModels, gin.H{"import_id": defaultModelID, "import_name": defaultModelID, "local_id": mo.ID.String(), "local_name": mo.Name})
+		} else {
+			missingModels = append(missingModels, gin.H{"import_id": defaultModelID, "import_name": defaultModelID})
+		}
+	}
+
+	return gin.H{
+		"matched_agents": matchedAgents, "matched_datasources": matchedDS, "matched_models": matchedModels,
+		"missing_agents": missingAgents, "missing_datasources": missingDS, "missing_models": missingModels,
+	}
 }
 
 func (a *App) ConfirmImport(c *gin.Context) {
@@ -312,13 +370,47 @@ func (a *App) ConfirmImport(c *gin.Context) {
 	}
 	var p map[string]any
 	_ = json.Unmarshal(sess.Payload, &p)
+	// Apply bindings: replace old resource IDs with new ones in nodes
+	if len(body.Bindings) > 0 {
+		nodes, _ := p["nodes"].([]any)
+		for _, n := range nodes {
+			node, _ := n.(map[string]any)
+			data, _ := node["data"].(map[string]any)
+			if agentID, ok := data["agent_id"].(string); ok {
+				if newID, exists := body.Bindings[agentID]; exists {
+					if s, ok2 := newID.(string); ok2 {
+						data["agent_id"] = s
+					}
+				}
+			}
+			if agentIDs, ok := data["agent_ids"].([]any); ok {
+				for i, aid := range agentIDs {
+					if idStr, ok2 := aid.(string); ok2 {
+						if newID, exists := body.Bindings[idStr]; exists {
+							if s, ok3 := newID.(string); ok3 {
+								agentIDs[i] = s
+							}
+						}
+					}
+				}
+				data["agent_ids"] = agentIDs
+			}
+		}
+		p["nodes"] = nodes
+		if modelID, ok := p["default_model_id"].(string); ok {
+			if newID, exists := body.Bindings[modelID]; exists {
+				if s, ok2 := newID.(string); ok2 {
+					p["default_model_id"] = s
+				}
+			}
+		}
+	}
 	wf := model.Workflow{
 		OwnerID: uid(c), Name: str(p["name"]) + " (imported)",
 		Description: strPtr(p["description"]),
 		Tags:        jbytes(p["tags"]), GlobalParams: jbytes(p["global_params"]), Nodes: jbytes(p["nodes"]), Edges: jbytes(p["edges"]),
 		ExecConfig: jbytes(p["exec_config"]), Version: 1, Visibility: "private",
 	}
-	_ = body.Bindings
 	if err := a.DB.Create(&wf).Error; err != nil {
 		response.Fail(c, apperr.ErrInternal)
 		return
@@ -349,12 +441,14 @@ func (a *App) ShareWorkflow(c *gin.Context) {
 		return
 	}
 	_ = a.DB.Model(&model.Workflow{}).Where("id = ?", id).Updates(map[string]any{"visibility": dto.Visibility, "share_code": code}).Error
-	response.OK(c, gin.H{"code": code, "share_url": "/workflows/import?code=" + code})
+	response.OK(c, gin.H{"share_code": code, "share_url": "/workflows/import?code=" + code})
 }
 
 func randomCode(n int) string {
-	_ = n
-	b := make([]byte, 8)
+	if n <= 0 {
+		n = 8
+	}
+	b := make([]byte, n)
 	_, _ = rand.Read(b)
 	return hex.EncodeToString(b)
 }

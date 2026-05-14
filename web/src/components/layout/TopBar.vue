@@ -18,7 +18,7 @@
         clearable
         @keyup.enter="handleSearch"
       />
-      <el-badge :value="3" :max="99" class="notify-badge">
+      <el-badge :value="taskRunningCount" :max="99" :hidden="taskRunningCount === 0" class="notify-badge" @click="handleNotifications">
         <el-icon :size="20"><Bell /></el-icon>
       </el-badge>
       <el-dropdown trigger="click" @command="handleUserCommand">
@@ -51,6 +51,7 @@ const route = useRoute()
 const router = useRouter()
 const userStore = useUserStore()
 const searchKeyword = ref('')
+const taskRunningCount = ref(0)
 
 const BREADCRUMB_MAP: Record<string, string> = {
   dashboard: '工作台',
@@ -81,9 +82,15 @@ function handleSearch() {
 }
 
 async function handleUserCommand(cmd: string) {
-  if (cmd === 'logout') {
+  if (cmd === 'profile') {
+    router.push('/profile')
+  } else if (cmd === 'logout') {
     await userStore.logout()
   }
+}
+
+function handleNotifications() {
+  router.push('/tasks')
 }
 </script>
 

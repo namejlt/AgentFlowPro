@@ -51,7 +51,7 @@ func (a *App) CreateTask(c *gin.Context) {
 	go func(id uuid.UUID) {
 		a.runner.Run(context.Background(), id, a.Cfg.EngineTaskTimeout)
 	}(tid)
-	response.OK(c, gin.H{"task_id": t.ID.String(), "status": t.Status})
+	response.OK(c, gin.H{"task_id": t.ID.String(), "id": t.ID.String(), "status": t.Status})
 }
 
 func (a *App) GetTask(c *gin.Context) {
@@ -126,8 +126,16 @@ func (a *App) ListTaskSteps(c *gin.Context) {
 	}
 	out := make([]gin.H, 0, len(steps))
 	for _, s := range steps {
+		var agentName string
+		if s.AgentID != nil {
+			var ag model.Agent
+			if err := a.DB.First(&ag, "id = ?", *s.AgentID).Error; err == nil {
+				agentName = ag.Name
+			}
+		}
 		out = append(out, gin.H{
 			"id": s.ID.String(), "node_id": s.NodeID, "node_type": s.NodeType, "agent_id": s.AgentID,
+			"agent_name": agentName,
 			"status": s.Status, "debate_round": s.DebateRound, "input": json.RawMessage(s.Input), "output": json.RawMessage(s.Output),
 			"tokens_used": s.TokensUsed, "error_message": s.ErrorMessage, "started_at": s.StartedAt, "finished_at": s.FinishedAt,
 		})
@@ -170,7 +178,7 @@ func (a *App) RerunTask(c *gin.Context) {
 		return
 	}
 	go func(id uuid.UUID) { a.runner.Run(context.Background(), id, a.Cfg.EngineTaskTimeout) }(t.ID)
-	response.OK(c, gin.H{"task_id": t.ID.String()})
+	response.OK(c, gin.H{"task_id": t.ID.String(), "id": t.ID.String()})
 }
 
 func (a *App) TaskStream(c *gin.Context) {

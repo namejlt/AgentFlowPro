@@ -41,3 +41,5 @@ node_modules/
 
 # Docs generated
 docs/config.md
+
+*.claude

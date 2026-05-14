@@ -102,7 +102,7 @@ type Agent struct {
 	Icon           *string
 	SystemPrompt   string         `gorm:"type:text;not null"`
 	LLMModelID     *uuid.UUID     `gorm:"type:uuid;index"`
-	DataSourceID   *uuid.UUID     `gorm:"type:uuid;index"`
+	DataSourceID   *uuid.UUID     `gorm:"type:uuid;index;column:datasource_id"`
 	ParamMappings  []byte         `gorm:"type:jsonb;not null"`
 	OutputFormat   string         `gorm:"size:16;not null;default:markdown"`
 	OutputLang     string         `gorm:"size:16;not null;default:zh-CN"`

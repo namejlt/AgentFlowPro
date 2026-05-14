@@ -52,6 +52,7 @@ func (a *App) CreateAgent(c *gin.Context) {
 		response.Fail(c, apperr.ErrConflict)
 		return
 	}
+	a.LogCreate(c, "agent", ag.ID, gin.H{"name": ag.Name})
 	response.OK(c, a.toAgentView(&ag))
 }
 
@@ -85,6 +86,7 @@ func (a *App) UpdateAgent(c *gin.Context) {
 		return
 	}
 	_ = a.DB.First(&ag, "id = ?", id).Error
+	a.LogUpdate(c, "agent", id, gin.H{"name": dto.Name})
 	response.OK(c, a.toAgentView(&ag))
 }
 
@@ -119,6 +121,7 @@ func (a *App) DeleteAgent(c *gin.Context) {
 		response.Fail(c, apperr.ErrInternal)
 		return
 	}
+	a.LogDelete(c, "agent", id, gin.H{})
 	response.OK(c, gin.H{"ok": true})
 }
 
@@ -164,12 +167,14 @@ func (a *App) toAgentView(ag *model.Agent) gin.H {
 	var tags []string
 	_ = json.Unmarshal(ag.Tags, &tags)
 	var wfCount int64
-	_ = a.DB.Raw(`SELECT COUNT(1) FROM workflows WHERE owner_id = ? AND deleted_at IS NULL`, ag.OwnerID).Scan(&wfCount).Error
+	agentIDStr := ag.ID.String()
+	_ = a.DB.Raw(`SELECT COUNT(1) FROM workflows WHERE deleted_at IS NULL AND nodes::text ILIKE '%' || ? || '%'`, agentIDStr).Scan(&wfCount).Error
 	h := gin.H{
 		"id": ag.ID.String(), "name": ag.Name, "role_desc": ag.RoleDesc, "tags": tags, "icon": ag.Icon,
 		"system_prompt": ag.SystemPrompt, "llm_model_id": ag.LLMModelID, "datasource_id": ag.DataSourceID,
 		"param_mappings": json.RawMessage(ag.ParamMappings), "output_format": ag.OutputFormat, "output_lang": ag.OutputLang,
 		"max_output_chars": ag.MaxOutputChars, "enabled": ag.Enabled, "referenced_workflows_estimate": wfCount,
+		"created_at": ag.CreatedAt, "updated_at": ag.UpdatedAt,
 	}
 	return h
 }
@@ -194,13 +199,23 @@ func (a *App) PreviewAgent(c *gin.Context) {
 	}
 	var mo model.LLMModel
 	if ag.LLMModelID != nil {
-		_ = a.DB.First(&mo, "id = ?", *ag.LLMModelID).Error
+		if err := a.DB.First(&mo, "id = ?", *ag.LLMModelID).Error; err != nil {
+			response.Fail(c, apperr.WithFields(apperr.ErrNotFound, gin.H{"detail": "绑定的LLM模型不存在"}))
+			return
+		}
 	} else {
-		_ = a.DB.Where("deleted_at IS NULL").Order("is_default desc").First(&mo).Error
+		if err := a.DB.Where("enabled = true AND deleted_at IS NULL").Order("is_default desc").First(&mo).Error; err != nil {
+			response.Fail(c, apperr.WithFields(apperr.ErrNotFound, gin.H{"detail": "没有可用的LLM模型，请先配置模型"}))
+			return
+		}
+	}
+	if !mo.Enabled {
+		response.Fail(c, apperr.WithFields(apperr.ErrBadRequest, gin.H{"detail": "模型未启用"}))
+		return
 	}
 	key, err := crypto.Open(a.Cfg.EncryptionKey, mo.APIKeyEncrypted)
 	if err != nil {
-		response.Fail(c, apperr.ErrInternal)
+		response.Fail(c, apperr.WithFields(apperr.ErrInternal, gin.H{"detail": "API Key解密失败，请重新配置模型"}))
 		return
 	}
 	dsText := ""
@@ -248,10 +263,14 @@ func (a *App) PreviewAgent(c *gin.Context) {
 	resp, err := client.Chat(c.Request.Context(), llm.ChatOpts{
 		Endpoint: mo.Endpoint, APIKey: string(key), Model: mo.ModelID,
 		Messages: []llm.Message{{Role: "system", Content: prompt}, {Role: "user", Content: "请输出预览结果。"}},
-		Temp:     mo.Temperature, MaxTokens: minInt(mo.MaxTokens, ag.MaxOutputChars), Timeout: durationFromMS(mo.TimeoutMS), Retries: 0, Stream: false,
+		Temp: mo.Temperature, MaxTokens: minInt(mo.MaxTokens, ag.MaxOutputChars), Timeout: durationFromMS(mo.TimeoutMS), Retries: 1, Stream: false,
 	})
 	if err != nil {
-		response.Fail(c, apperr.ErrUpstream)
+		response.OK(c, gin.H{
+			"output":      "",
+			"tokens_used": 0,
+			"error":       err.Error(),
+		})
 		return
 	}
 	response.OK(c, gin.H{"output": resp.Content, "tokens_used": resp.Tokens})

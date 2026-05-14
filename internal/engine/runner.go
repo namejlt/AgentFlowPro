@@ -17,6 +17,7 @@ import (
 	"github.com/namejlt/AgentFlowPro/internal/repository"
 )
 
+// Runner executes workflow tasks with DAG-based node scheduling.
 type Runner struct {
 	DB     *gorm.DB
 	Store  *repository.Store
@@ -31,6 +32,7 @@ type Runner struct {
 	cancels map[uuid.UUID]context.CancelFunc
 }
 
+// NewRunner creates a new workflow task runner.
 func NewRunner(db *gorm.DB, store *repository.Store, key []byte, hub *Hub, maxPar int) *Runner {
 	if maxPar <= 0 {
 		maxPar = 32
@@ -48,6 +50,7 @@ func NewRunner(db *gorm.DB, store *repository.Store, key []byte, hub *Hub, maxPa
 	}
 }
 
+// Stop cancels a running task by ID.
 func (r *Runner) Stop(taskID uuid.UUID) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -57,6 +60,7 @@ func (r *Runner) Stop(taskID uuid.UUID) {
 	}
 }
 
+// Run starts executing a task with the given timeout.
 func (r *Runner) Run(parent context.Context, taskID uuid.UUID, taskTimeout time.Duration) {
 	ctx, cancel := context.WithTimeout(parent, taskTimeout)
 	r.mu.Lock()
@@ -84,6 +88,7 @@ func (r *Runner) Run(parent context.Context, taskID uuid.UUID, taskTimeout time.
 	}
 }
 
+// run is the core DAG execution engine.
 func (r *Runner) run(ctx context.Context, taskID uuid.UUID) error {
 	var t model.Task
 	if err := r.Store.DB.WithContext(ctx).First(&t, "id = ?", taskID).Error; err != nil {
@@ -102,24 +107,21 @@ func (r *Runner) run(ctx context.Context, taskID uuid.UUID) error {
 	store := newRunStore(global)
 
 	_ = r.Store.DB.Model(&model.Task{}).Where("id = ?", taskID).Updates(map[string]any{
-		"status":      "running",
-		"started_at":  time.Now(),
+		"status":           "running",
+		"started_at":       time.Now(),
 		"workflow_version": t.WorkflowVersion,
 	}).Error
 
-	pred := g.PredCount()
+	// Initialize state tracking for all nodes
 	state := map[string]string{} // pending|running|completed|skipped|failed
 	for id := range g.NodeMap {
 		state[id] = "pending"
 	}
 
-	ready := []string{}
-	for id := range g.NodeMap {
-		if pred[id] == 0 {
-			ready = append(ready, id)
-		}
-	}
+	// Build predecessor count map (mutable copy for tracking)
+	pred := g.PredCount()
 
+	// Execution config
 	execCfg, _ := jsonutil.UnmarshalMap(wf.ExecConfig)
 	maxConc := r.MaxPar
 	if v, ok := execCfg["max_concurrency"].(float64); ok && int(v) > 0 {
@@ -128,6 +130,14 @@ func (r *Runner) run(ctx context.Context, taskID uuid.UUID) error {
 	sem := make(chan struct{}, maxConc)
 
 	started := time.Now()
+
+	// Kahn's algorithm with condition branch support
+	ready := []string{}
+	for id := range g.NodeMap {
+		if pred[id] == 0 {
+			ready = append(ready, id)
+		}
+	}
 
 	for len(ready) > 0 {
 		select {
@@ -143,9 +153,14 @@ func (r *Runner) run(ctx context.Context, taskID uuid.UUID) error {
 		if state[nodeID] != "pending" {
 			continue
 		}
+
 		node := g.NodeMap[nodeID]
 		state[nodeID] = "running"
-		r.Hub.PublishJSON(taskID, "node_status", map[string]any{"node_id": nodeID, "status": "running", "timestamp": time.Now().UnixMilli()})
+		r.Hub.PublishJSON(taskID, "node_status", map[string]any{
+			"node_id":   nodeID,
+			"status":    "running",
+			"timestamp": time.Now().UnixMilli(),
+		})
 
 		sem <- struct{}{}
 		out, nextLabel, err := r.executeNode(ctx, taskID, &wf, g, node, store, func(ev string, payload any) {
@@ -155,21 +170,38 @@ func (r *Runner) run(ctx context.Context, taskID uuid.UUID) error {
 
 		if err != nil {
 			state[nodeID] = "failed"
-			r.Hub.PublishJSON(taskID, "node_status", map[string]any{"node_id": nodeID, "status": "failed", "timestamp": time.Now().UnixMilli()})
+			r.Hub.PublishJSON(taskID, "node_status", map[string]any{
+				"node_id":   nodeID,
+				"status":    "failed",
+				"timestamp": time.Now().UnixMilli(),
+			})
 			_ = r.failTask(ctx, taskID, err)
 			return err
 		}
+
 		state[nodeID] = "completed"
 		store.setNodeOutput(nodeID, out)
-		r.Hub.PublishJSON(taskID, "node_status", map[string]any{"node_id": nodeID, "status": "completed", "timestamp": time.Now().UnixMilli()})
+		r.Hub.PublishJSON(taskID, "node_status", map[string]any{
+			"node_id":   nodeID,
+			"status":    "completed",
+			"timestamp": time.Now().UnixMilli(),
+		})
 
-		// condition: nextLabel 用于边 label 匹配（多出线时建议在边 data.label 上配置）
-		_ = nextLabel
-
+		// Schedule successors, respecting condition branch labels
 		for _, succ := range g.Succs[nodeID] {
 			if state[succ] == "skipped" {
 				continue
 			}
+
+			// Check edge label matching for condition branches
+			if edgeLabel, hasLabel := g.EdgeLabels[nodeID][succ]; hasLabel && nextLabel != "" {
+				if edgeLabel != nextLabel {
+					// This branch is not taken - skip the successor and its downstream
+					r.skipBranch(g, state, succ)
+					continue
+				}
+			}
+
 			pred[succ]--
 			if pred[succ] == 0 {
 				ready = append(ready, succ)
@@ -177,13 +209,30 @@ func (r *Runner) run(ctx context.Context, taskID uuid.UUID) error {
 		}
 	}
 
-	// ensure end node ran; if DAG missing end, still finalize
+	// Check if all non-skipped nodes completed
+	for id, st := range state {
+		if st == "pending" {
+			return fmt.Errorf("node %s is still pending after execution (possible cycle or disconnected node)", id)
+		}
+	}
+
 	title := store.getString("report:title")
 	if title == "" {
 		title = wf.Name + " 报告"
 	}
 	dur := time.Since(started).Milliseconds()
 	return r.finalizeSuccess(ctx, taskID, &wf, &t, store, title, dur)
+}
+
+// skipBranch marks a node and all its downstream as skipped.
+func (r *Runner) skipBranch(g *Graph, state map[string]string, nodeID string) {
+	if state[nodeID] == "skipped" || state[nodeID] == "completed" {
+		return
+	}
+	state[nodeID] = "skipped"
+	for _, succ := range g.Succs[nodeID] {
+		r.skipBranch(g, state, succ)
+	}
 }
 
 func (r *Runner) failTask(ctx context.Context, taskID uuid.UUID, err error) error {
@@ -193,6 +242,7 @@ func (r *Runner) failTask(ctx context.Context, taskID uuid.UUID, err error) erro
 	return err
 }
 
+// runStore holds execution state for a single workflow run.
 type runStore struct {
 	mu     sync.Mutex
 	global map[string]any

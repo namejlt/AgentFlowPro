@@ -22,7 +22,7 @@
       </el-row>
     </el-card>
 
-    <el-card>
+    <el-card v-loading="loading">
       <el-table :data="tasks" stripe>
         <el-table-column prop="workflow_name" label="工作流" min-width="140" />
         <el-table-column prop="status" label="状态" width="100">
@@ -80,6 +80,7 @@ const pageSize = ref(20)
 const total = ref(0)
 const keyword = ref('')
 const filterStatus = ref('')
+const loading = ref(false)
 
 function statusType(status: string) {
   const map: Record<string, string> = { completed: 'success', failed: 'danger', running: 'warning', pending: 'info', queued: 'info', stopped: 'info', paused: 'warning' }
@@ -92,11 +93,16 @@ function statusLabel(status: string) {
 }
 
 async function fetchList() {
+  loading.value = true
   try {
     const res = await getTasks({ page: page.value, page_size: pageSize.value, keyword: keyword.value, status: filterStatus.value || undefined })
     tasks.value = res.data.data || []
     total.value = res.data.meta?.total || 0
-  } catch {}
+  } catch (e: any) {
+    ElMessage.error(e.message || '获取任务列表失败')
+  } finally {
+    loading.value = false
+  }
 }
 
 async function handleStop(task: TaskItem) {
@@ -105,7 +111,9 @@ async function handleStop(task: TaskItem) {
     await stopTask(task.id)
     ElMessage.success('已停止')
     fetchList()
-  } catch {}
+  } catch (e: any) {
+    ElMessage.error(e.message || '停止失败')
+  }
 }
 
 async function handleRerun(task: TaskItem) {
@@ -113,7 +121,9 @@ async function handleRerun(task: TaskItem) {
     await rerunTask(task.id)
     ElMessage.success('已重新执行')
     fetchList()
-  } catch {}
+  } catch (e: any) {
+    ElMessage.error(e.message || '重跑失败')
+  }
 }
 
 onMounted(fetchList)

@@ -27,7 +27,7 @@
       </el-row>
     </el-card>
 
-    <el-card>
+    <el-card v-loading="loading">
       <el-table :data="reports" stripe @selection-change="handleSelectionChange">
         <el-table-column type="selection" width="50" />
         <el-table-column prop="title" label="标题" min-width="200" show-overflow-tooltip />
@@ -54,16 +54,7 @@
         <el-table-column label="操作" width="220" fixed="right">
           <template #default="{ row }">
             <el-button link type="primary" @click="$router.push(`/reports/${row.id}`)">查看</el-button>
-            <el-dropdown trigger="click" @command="(cmd: string) => handleExport(cmd, row)">
-              <el-button link type="primary">导出</el-button>
-              <template #dropdown>
-                <el-dropdown-menu>
-                  <el-dropdown-item command="md">Markdown</el-dropdown-item>
-                  <el-dropdown-item command="pdf">PDF</el-dropdown-item>
-                  <el-dropdown-item command="docx">DOCX</el-dropdown-item>
-                </el-dropdown-menu>
-              </template>
-            </el-dropdown>
+            <ExportMenu style="display: inline" @export="(fmt: string) => handleExport(fmt, row)" />
             <el-button link type="warning" @click="handleArchive(row)">{{ row.archived ? '取消归档' : '归档' }}</el-button>
             <el-button link type="danger" @click="handleDelete(row)">删除</el-button>
           </template>
@@ -86,6 +77,7 @@
 <script setup lang="ts">
 import { ref, onMounted } from 'vue'
 import type { ReportItem } from '@/types'
+import ExportMenu from '@/components/report/ExportMenu.vue'
 import { getReports, deleteReport, archiveReport, batchDeleteReports, exportReportMd, exportReportPdf, exportReportDocx } from '@/api/reports'
 import { formatDateTime, formatDuration } from '@/utils/datetime'
 import { downloadBlob } from '@/utils/download'
@@ -100,12 +92,19 @@ const filterStatus = ref('')
 const filterArchived = ref('')
 const selectedIds = ref<string[]>([])
 
+const loading = ref(false)
+
 async function fetchList() {
+  loading.value = true
   try {
     const res = await getReports({ page: page.value, page_size: pageSize.value, keyword: keyword.value, status: filterStatus.value || undefined, archived: filterArchived.value === 'true' ? true : filterArchived.value === 'false' ? false : undefined })
     reports.value = res.data.data || []
     total.value = res.data.meta?.total || 0
-  } catch {}
+  } catch (e: any) {
+    ElMessage.error(e.message || '获取报告列表失败')
+  } finally {
+    loading.value = false
+  }
 }
 
 function handleSelectionChange(rows: ReportItem[]) {
@@ -121,7 +120,9 @@ async function handleExport(format: string, row: ReportItem) {
     else { res = await exportReportDocx(row.id); filename = `${row.title}.docx` }
     downloadBlob(res.data, filename)
     ElMessage.success('导出成功')
-  } catch {}
+  } catch (e: any) {
+    ElMessage.error(e.message || '导出失败')
+  }
 }
 
 async function handleArchive(row: ReportItem) {
@@ -129,7 +130,9 @@ async function handleArchive(row: ReportItem) {
     await archiveReport(row.id, !row.archived)
     ElMessage.success(row.archived ? '已取消归档' : '已归档')
     fetchList()
-  } catch {}
+  } catch (e: any) {
+    ElMessage.error(e.message || '操作失败')
+  }
 }
 
 async function handleDelete(row: ReportItem) {
@@ -138,7 +141,9 @@ async function handleDelete(row: ReportItem) {
     await deleteReport(row.id)
     ElMessage.success('删除成功')
     fetchList()
-  } catch {}
+  } catch (e: any) {
+    ElMessage.error(e.message || '删除失败')
+  }
 }
 
 async function handleBatchDelete() {
@@ -147,7 +152,9 @@ async function handleBatchDelete() {
     await batchDeleteReports(selectedIds.value)
     ElMessage.success('批量删除成功')
     fetchList()
-  } catch {}
+  } catch (e: any) {
+    ElMessage.error(e.message || '批量删除失败')
+  }
 }
 
 onMounted(fetchList)

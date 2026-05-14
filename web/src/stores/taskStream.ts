@@ -17,6 +17,7 @@ export const useTaskStreamStore = defineStore('taskStream', () => {
   const errorMessage = ref('')
   const reportId = ref('')
   const eventSource = ref<EventSource | null>(null)
+  const riskItems = ref<{ dimension: string; level: 'low' | 'medium' | 'high' | 'critical'; summary: string; timestamp: string }[]>([])
 
   function init() {
     nodeStates.value = {}
@@ -25,6 +26,7 @@ export const useTaskStreamStore = defineStore('taskStream', () => {
     failed.value = false
     errorMessage.value = ''
     reportId.value = ''
+    riskItems.value = []
   }
 
   function connect(taskId: string) {
@@ -56,8 +58,12 @@ export const useTaskStreamStore = defineStore('taskStream', () => {
     es.addEventListener('agent_stream_chunk', (e) => {
       const data = JSON.parse(e.data)
       const existing = nodeStates.value[data.step_id] || { nodeId: data.step_id, status: 'running', output: '', agentName: '' }
-      nodeStates.value[data.step_id] = { ...existing, output: data.accumulated || (existing.output + data.chunk) }
-      logs.value.push({ timestamp: new Date().toISOString(), event: 'agent_stream_chunk', data })
+      const newOutput = data.accumulated || (existing.output + (data.chunk || ''))
+      nodeStates.value[data.step_id] = { ...existing, output: newOutput }
+      // Limit logs to prevent memory issues
+      if (logs.value.length < 1000) {
+        logs.value.push({ timestamp: new Date().toISOString(), event: 'agent_stream_chunk', data: { step_id: data.step_id, chunk_length: (data.chunk || '').length } })
+      }
     })
 
     es.addEventListener('agent_stream_end', (e) => {
@@ -70,6 +76,22 @@ export const useTaskStreamStore = defineStore('taskStream', () => {
     es.addEventListener('debate_round', (e) => {
       const data = JSON.parse(e.data)
       logs.value.push({ timestamp: new Date().toISOString(), event: 'debate_round', data })
+    })
+
+    es.addEventListener('risk_review', (e) => {
+      const data = JSON.parse(e.data)
+      const text: string = data.result || ''
+      let level: 'low' | 'medium' | 'high' | 'critical' = 'medium'
+      if (text.includes('严重') || text.includes('critical')) level = 'critical'
+      else if (text.includes('高') || text.includes('high')) level = 'high'
+      else if (text.includes('低') || text.includes('low')) level = 'low'
+      riskItems.value.push({
+        dimension: data.node_id || '风险评估',
+        level,
+        summary: text,
+        timestamp: new Date().toISOString(),
+      })
+      logs.value.push({ timestamp: new Date().toISOString(), event: 'risk_review', data })
     })
 
     es.addEventListener('task_complete', (e) => {
@@ -99,5 +121,5 @@ export const useTaskStreamStore = defineStore('taskStream', () => {
     }
   }
 
-  return { nodeStates, logs, completed, failed, errorMessage, reportId, connect, disconnect, init }
+  return { nodeStates, logs, completed, failed, errorMessage, reportId, riskItems, connect, disconnect, init }
 })

@@ -1,5 +1,5 @@
 import http from './http'
-import type { ApiResponse, WorkflowItem, PaginationParams, ImportMatchReport, ShareInfo } from '@/types'
+import type { ApiResponse, WorkflowItem, PaginationParams, ImportMatchReport, ImportWorkflowResult, ShareInfo } from '@/types'
 
 export function getWorkflows(params?: PaginationParams & { visibility?: string; archived?: boolean }) {
   return http.get<ApiResponse<WorkflowItem[]>>('/api/v1/workflows', { params })
@@ -34,15 +34,11 @@ export function rollbackWorkflow(id: string, version: number) {
 }
 
 export function exportWorkflow(id: string) {
-  return http.get<ApiResponse<any>>(`/api/v1/workflows/${id}/export`)
+  return http.get(`/api/v1/workflows/${id}/export`, { responseType: 'blob' })
 }
 
-export function importWorkflow(file: File) {
-  const formData = new FormData()
-  formData.append('file', file)
-  return http.post<ApiResponse<ImportMatchReport>>('/api/v1/workflows/import', formData, {
-    headers: { 'Content-Type': 'multipart/form-data' },
-  })
+export function importWorkflow(data: any) {
+  return http.post<ApiResponse<ImportWorkflowResult>>('/api/v1/workflows/import', data)
 }
 
 export function confirmImport(data: { session_id: string; bindings: Record<string, string> }) {

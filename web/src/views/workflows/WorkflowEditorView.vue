@@ -20,7 +20,7 @@
         <el-button type="warning" @click="handleExec">
           <el-icon><VideoPlay /></el-icon>执行
         </el-button>
-        <el-button type="primary" @click="handleSave">
+        <el-button type="primary" :loading="saving" @click="handleSave">
           <el-icon><Check /></el-icon>保存
         </el-button>
       </div>
@@ -183,7 +183,14 @@ function handleExec() {
   store.execDialogVisible = true
 }
 
+const saving = ref(false)
+
 async function handleSave() {
+  if (!store.workflowName.trim()) {
+    ElMessage.warning('请输入工作流名称')
+    return
+  }
+  saving.value = true
   try {
     const payload = {
       name: store.workflowName,
@@ -204,7 +211,11 @@ async function handleSave() {
       store.workflowId = res.data.data.id
       ElMessage.success('创建成功')
     }
-  } catch {}
+  } catch (e: any) {
+    ElMessage.error(e.message || '保存失败')
+  } finally {
+    saving.value = false
+  }
 }
 
 onMounted(async () => {
@@ -214,7 +225,9 @@ onMounted(async () => {
       const res = await getWorkflow(id)
       store.initFromWorkflow(res.data.data)
       currentVersion.value = res.data.data.version || 1
-    } catch {}
+    } catch (e: any) {
+      ElMessage.error(e.message || '加载工作流失败')
+    }
   } else {
     store.reset()
     store.addNode('start', { x: 100, y: 200 })

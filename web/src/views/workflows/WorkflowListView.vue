@@ -33,7 +33,7 @@
       </el-row>
     </el-card>
 
-    <div v-if="viewMode === 'card'" class="card-grid">
+    <div v-if="viewMode === 'card'" v-loading="loading" class="card-grid">
       <el-card v-for="wf in workflows" :key="wf.id" shadow="hover" class="workflow-card" @click="handleEdit(wf)">
         <template #header>
           <div class="card-title-row">
@@ -46,6 +46,7 @@
                   <el-dropdown-item command="clone">复制</el-dropdown-item>
                   <el-dropdown-item command="export">导出</el-dropdown-item>
                   <el-dropdown-item command="share">分享</el-dropdown-item>
+                  <el-dropdown-item command="versions">版本历史</el-dropdown-item>
                   <el-dropdown-item command="delete" divided style="color: #f56c6c">删除</el-dropdown-item>
                 </el-dropdown-menu>
               </template>
@@ -68,7 +69,7 @@
       </el-card>
     </div>
 
-    <el-card v-else>
+    <el-card v-else v-loading="loading">
       <el-table :data="workflows" stripe>
         <el-table-column prop="name" label="名称" min-width="160" />
         <el-table-column prop="description" label="描述" min-width="200" show-overflow-tooltip />
@@ -88,6 +89,7 @@
           <template #default="{ row }">
             <el-button link type="primary" @click="handleEdit(row)">编辑</el-button>
             <el-button link type="primary" @click="handleClone(row)">复制</el-button>
+            <el-button link type="primary" @click="handleShowVersions(row.id)">版本</el-button>
             <el-button link type="primary" @click="handleExport(row)">导出</el-button>
             <el-button link type="danger" @click="handleDelete(row)">删除</el-button>
           </template>
@@ -113,6 +115,61 @@
       <template #footer>
         <el-button @click="showImportDialog = false">取消</el-button>
         <el-button type="primary" :loading="importing" @click="doImport">确认导入</el-button>
+      </template>
+    </el-dialog>
+
+    <el-dialog v-model="showVersionDialog" title="版本历史" width="600px">
+      <el-table :data="versions" v-loading="versionLoading" stripe max-height="400">
+        <el-table-column prop="version" label="版本号" width="80" />
+        <el-table-column prop="created_at" label="创建时间" width="180">
+          <template #default="{ row }">{{ formatDateTime(row.created_at) }}</template>
+        </el-table-column>
+        <el-table-column prop="created_by" label="创建者" width="200" />
+        <el-table-column label="操作" width="100">
+          <template #default="{ row }">
+            <el-button link type="primary" @click="handleRollback(row.version)">回滚</el-button>
+          </template>
+        </el-table-column>
+      </el-table>
+      <el-empty v-if="versions.length === 0 && !versionLoading" description="暂无版本记录" />
+      <template #footer>
+        <el-button @click="showVersionDialog = false">关闭</el-button>
+      </template>
+    </el-dialog>
+
+    <el-dialog v-model="showImportResultDialog" title="导入匹配报告" width="650px">
+      <div v-if="importReport">
+        <el-alert v-if="importReport.matched_agents?.length" type="success" :closable="false" style="margin-bottom: 12px">
+          已匹配智能体: {{ importReport.matched_agents.map(a => a.local_name).join(', ') }}
+        </el-alert>
+        <el-alert v-if="importReport.matched_datasources?.length" type="success" :closable="false" style="margin-bottom: 12px">
+          已匹配数据源: {{ importReport.matched_datasources.map(d => d.local_name).join(', ') }}
+        </el-alert>
+        <div v-if="importReport.missing_agents?.length" style="margin-bottom: 16px">
+          <h4>待绑定智能体:</h4>
+          <div v-for="agent in importReport.missing_agents" :key="agent.import_id" style="margin-bottom: 8px">
+            <span>{{ agent.import_name }} ({{ agent.import_id }})</span>
+            <el-input v-model="importBindings[agent.import_id]" placeholder="输入本地智能体ID" size="small" style="width: 300px; margin-left: 12px" />
+          </div>
+        </div>
+        <div v-if="importReport.missing_datasources?.length" style="margin-bottom: 16px">
+          <h4>待绑定数据源:</h4>
+          <div v-for="ds in importReport.missing_datasources" :key="ds.import_id" style="margin-bottom: 8px">
+            <span>{{ ds.import_name }} ({{ ds.import_id }})</span>
+            <el-input v-model="importBindings[ds.import_id]" placeholder="输入本地数据源ID" size="small" style="width: 300px; margin-left: 12px" />
+          </div>
+        </div>
+        <div v-if="importReport.missing_models?.length" style="margin-bottom: 16px">
+          <h4>待绑定模型:</h4>
+          <div v-for="model in importReport.missing_models" :key="model.import_id" style="margin-bottom: 8px">
+            <span>{{ model.import_name }} ({{ model.import_id }})</span>
+            <el-input v-model="importBindings[model.import_id]" placeholder="输入本地模型ID" size="small" style="width: 300px; margin-left: 12px" />
+          </div>
+        </div>
+      </div>
+      <template #footer>
+        <el-button @click="showImportResultDialog = false">取消</el-button>
+        <el-button type="primary" :loading="confirmingImport" @click="doConfirmImport">确认绑定并导入</el-button>
       </template>
     </el-dialog>
 
@@ -144,8 +201,8 @@
 import { ref, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import type { WorkflowItem, ShareInfo, ImportMatchReport } from '@/types'
-import { getWorkflows, createWorkflow, cloneWorkflow, deleteWorkflow, exportWorkflow, importWorkflow, shareWorkflow } from '@/api/workflows'
+import type { WorkflowItem, ShareInfo, ImportMatchReport, ImportWorkflowResult } from '@/types'
+import { getWorkflows, createWorkflow, cloneWorkflow, deleteWorkflow, exportWorkflow, importWorkflow, confirmImport, shareWorkflow, getWorkflowVersions, rollbackWorkflow } from '@/api/workflows'
 import { formatDateTime, timeAgo } from '@/utils/datetime'
 import { downloadBlob } from '@/utils/download'
 
@@ -165,13 +222,28 @@ const importReport = ref<ImportMatchReport | null>(null)
 const shareWfId = ref('')
 const shareInfo = ref<ShareInfo>({ share_code: '', share_url: '' })
 const shareExpiresAt = ref('')
+const showVersionDialog = ref(false)
+const versionLoading = ref(false)
+const versions = ref<{ version: number; created_at: string; created_by: string }[]>([])
+const versionWfId = ref('')
+const showImportResultDialog = ref(false)
+const confirmingImport = ref(false)
+const importSessionId = ref('')
+const importBindings = ref<Record<string, string>>({})
+
+const loading = ref(false)
 
 async function fetchList() {
+  loading.value = true
   try {
     const res = await getWorkflows({ page: page.value, page_size: pageSize.value, keyword: searchKeyword.value, visibility: filterVisibility.value || undefined })
     workflows.value = res.data.data || []
     total.value = res.data.meta?.total || 0
-  } catch {}
+  } catch (e: any) {
+    ElMessage.error(e.message || '获取工作流列表失败')
+  } finally {
+    loading.value = false
+  }
 }
 
 function handleSearch() {
@@ -192,7 +264,9 @@ async function handleClone(wf: WorkflowItem) {
     await cloneWorkflow(wf.id)
     ElMessage.success('复制成功')
     fetchList()
-  } catch {}
+  } catch (e: any) {
+    ElMessage.error(e.message || '复制失败')
+  }
 }
 
 async function handleDelete(wf: WorkflowItem) {
@@ -201,16 +275,19 @@ async function handleDelete(wf: WorkflowItem) {
     await deleteWorkflow(wf.id)
     ElMessage.success('删除成功')
     fetchList()
-  } catch {}
+  } catch (e: any) {
+    ElMessage.error(e.message || '删除失败')
+  }
 }
 
 async function handleExport(wf: WorkflowItem) {
   try {
     const res = await exportWorkflow(wf.id)
-    const blob = new Blob([JSON.stringify(res.data.data, null, 2)], { type: 'application/json' })
-    downloadBlob(blob, `${wf.name}.agentflow.json`)
+    downloadBlob(res.data as Blob, `${wf.name}.agentflow.json`)
     ElMessage.success('导出成功')
-  } catch {}
+  } catch (e: any) {
+    ElMessage.error(e.message || '导出失败')
+  }
 }
 
 function handleAction(cmd: string, wf: WorkflowItem) {
@@ -218,6 +295,7 @@ function handleAction(cmd: string, wf: WorkflowItem) {
   else if (cmd === 'clone') handleClone(wf)
   else if (cmd === 'export') handleExport(wf)
   else if (cmd === 'share') { shareWfId.value = wf.id; showShareDialog.value = true }
+  else if (cmd === 'versions') handleShowVersions(wf.id)
   else if (cmd === 'delete') handleDelete(wf)
 }
 
@@ -229,13 +307,65 @@ async function doImport() {
   if (!importFile.value) { ElMessage.warning('请选择文件'); return }
   importing.value = true
   try {
-    const res = await importWorkflow(importFile.value)
-    importReport.value = res.data.data
-    ElMessage.success('导入成功')
-    showImportDialog.value = false
-    fetchList()
-  } catch {} finally {
+    const text = await importFile.value.text()
+    const json = JSON.parse(text)
+    const res = await importWorkflow(json)
+    const data = res.data.data
+    importSessionId.value = data.session_id
+    if (data.match_report) {
+      importReport.value = data.match_report
+      importBindings.value = {}
+      showImportDialog.value = false
+      showImportResultDialog.value = true
+      ElMessage.info('请检查匹配报告并绑定缺失资源')
+    } else {
+      ElMessage.success('导入成功')
+      showImportDialog.value = false
+      fetchList()
+    }
+  } catch (e: any) {
+    ElMessage.error('导入失败: ' + (e.message || '文件解析错误'))
+  } finally {
     importing.value = false
+  }
+}
+
+async function doConfirmImport() {
+  confirmingImport.value = true
+  try {
+    await confirmImport({ session_id: importSessionId.value, bindings: importBindings.value })
+    ElMessage.success('导入成功')
+    showImportResultDialog.value = false
+    fetchList()
+  } catch (e: any) {
+    ElMessage.error('确认导入失败: ' + (e.message || ''))
+  } finally {
+    confirmingImport.value = false
+  }
+}
+
+async function handleShowVersions(wfId: string) {
+  versionWfId.value = wfId
+  showVersionDialog.value = true
+  versionLoading.value = true
+  try {
+    const res = await getWorkflowVersions(wfId)
+    versions.value = res.data.data || []
+  } catch (e: any) {
+    ElMessage.error(e.message || '获取版本列表失败')
+  } finally {
+    versionLoading.value = false
+  }
+}
+
+async function handleRollback(version: number) {
+  try {
+    await rollbackWorkflow(versionWfId.value, version)
+    ElMessage.success('已回滚到版本 v' + version)
+    showVersionDialog.value = false
+    fetchList()
+  } catch (e: any) {
+    ElMessage.error(e.message || '回滚失败')
   }
 }
 
@@ -244,7 +374,9 @@ async function doShare() {
     const res = await shareWorkflow(shareWfId.value, { expires_at: shareExpiresAt.value || undefined })
     shareInfo.value = res.data.data
     ElMessage.success('分享链接已生成')
-  } catch {}
+  } catch (e: any) {
+    ElMessage.error(e.message || '分享失败')
+  }
 }
 
 function copyShareLink() {

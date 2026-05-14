@@ -25,11 +25,13 @@ const routes: RouteRecordRaw[] = [
       { path: 'models', name: 'ModelList', component: () => import('@/views/models/ModelListView.vue') },
       { path: 'reports', name: 'ReportList', component: () => import('@/views/reports/ReportListView.vue') },
       { path: 'reports/:id', name: 'ReportDetail', component: () => import('@/views/reports/ReportDetailView.vue') },
-      { path: 'settings', name: 'SystemConfig', component: () => import('@/views/settings/SystemConfigView.vue') },
-      { path: 'settings/users', name: 'UserAdmin', component: () => import('@/views/settings/UserAdminView.vue') },
-      { path: 'settings/audit', name: 'AuditLog', component: () => import('@/views/settings/AuditLogView.vue') },
+      { path: 'settings', name: 'SystemConfig', component: () => import('@/views/settings/SystemConfigView.vue'), meta: { role: 'admin' } },
+      { path: 'settings/users', name: 'UserAdmin', component: () => import('@/views/settings/UserAdminView.vue'), meta: { role: 'admin' } },
+      { path: 'settings/audit', name: 'AuditLog', component: () => import('@/views/settings/AuditLogView.vue'), meta: { role: 'admin' } },
+      { path: 'profile', name: 'Profile', component: () => import('@/views/auth/ProfileView.vue') },
     ],
   },
+  { path: '/:pathMatch(.*)*', name: 'NotFound', component: () => import('@/views/auth/NotFoundView.vue'), meta: { public: true } },
 ]
 
 const router = createRouter({

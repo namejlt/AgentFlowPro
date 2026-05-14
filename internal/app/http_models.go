@@ -190,6 +190,7 @@ func (a *App) toLLMView(m *model.LLMModel, includeSecrets bool) gin.H {
 		"id": m.ID.String(), "name": m.Name, "vendor": m.Vendor, "endpoint": m.Endpoint, "model_id": m.ModelID,
 		"temperature": m.Temperature, "max_tokens": m.MaxTokens, "timeout_ms": m.TimeoutMS, "retry_count": m.RetryCount,
 		"stream_enabled": m.StreamEnabled, "enabled": m.Enabled, "is_default": m.IsDefault,
+		"created_at": m.CreatedAt, "updated_at": m.UpdatedAt,
 	}
 	if includeSecrets {
 		if plain, err := crypto.Open(a.Cfg.EncryptionKey, m.APIKeyEncrypted); err == nil {

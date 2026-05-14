@@ -21,6 +21,7 @@
       </el-row>
     </el-card>
 
+    <el-card v-loading="loading">
     <div class="card-grid">
       <el-card v-for="agent in agents" :key="agent.id" shadow="hover" class="agent-card" @click="handleEdit(agent)">
         <template #header>
@@ -48,7 +49,7 @@
       </el-card>
     </div>
 
-    <el-dialog v-model="previewVisible" title="智能体预览测试" width="600px">
+    <el-dialog v-model="previewVisible" title="智能体预览测试" width="600px" @closed="previewOutput = ''; previewError = ''">
       <div v-if="previewAgent">
         <p style="margin-bottom: 12px; color: #909399">测试智能体: {{ previewAgent.name }}</p>
         <el-input v-model="previewInput" type="textarea" :rows="3" placeholder="输入测试内容（可选）" />
@@ -56,6 +57,7 @@
           <el-icon class="is-loading" :size="24"><Loading /></el-icon>
           <span style="margin-left: 8px">生成中...</span>
         </div>
+        <el-alert v-if="previewError" :title="previewError" type="error" :closable="false" style="margin-top: 12px" />
         <div v-if="previewOutput" class="preview-output markdown-body" style="margin-top: 12px" v-html="renderMarkdown(previewOutput)" />
       </div>
       <template #footer>
@@ -63,6 +65,7 @@
         <el-button type="primary" :loading="previewLoading" @click="doPreview">执行测试</el-button>
       </template>
     </el-dialog>
+    </el-card>
   </div>
 </template>
 
@@ -83,12 +86,19 @@ const previewAgent = ref<AgentItem | null>(null)
 const previewInput = ref('')
 const previewLoading = ref(false)
 const previewOutput = ref('')
+const previewError = ref('')
+const loading = ref(false)
 
 async function fetchList() {
+  loading.value = true
   try {
     const res = await getAgents({ keyword: keyword.value, enabled: filterEnabled.value === 'true' ? true : filterEnabled.value === 'false' ? false : undefined })
     agents.value = res.data.data || []
-  } catch {}
+  } catch (e: any) {
+    ElMessage.error(e.message || '获取智能体列表失败')
+  } finally {
+    loading.value = false
+  }
 }
 
 function handleCreate() {
@@ -104,7 +114,9 @@ async function handleClone(agent: AgentItem) {
     await cloneAgent(agent.id)
     ElMessage.success('复制成功')
     fetchList()
-  } catch {}
+  } catch (e: any) {
+    ElMessage.error(e.message || '复制失败')
+  }
 }
 
 async function handleDelete(agent: AgentItem) {
@@ -113,7 +125,9 @@ async function handleDelete(agent: AgentItem) {
     await deleteAgent(agent.id)
     ElMessage.success('删除成功')
     fetchList()
-  } catch {}
+  } catch (e: any) {
+    ElMessage.error(e.message || '删除失败')
+  }
 }
 
 function handlePreview(agent: AgentItem) {
@@ -127,10 +141,20 @@ async function doPreview() {
   if (!previewAgent.value) return
   previewLoading.value = true
   previewOutput.value = ''
+  previewError.value = ''
   try {
-    const res = await apiPreviewAgent(previewAgent.value.id, { globals: { content: previewInput.value } })
-    previewOutput.value = res.data.data.output
-  } catch {} finally {
+    const res = await apiPreviewAgent(previewAgent.value.id, { content: previewInput.value })
+    const data = res.data.data
+    if (data.error) {
+      previewError.value = data.error
+    } else if (data.output) {
+      previewOutput.value = data.output
+    } else {
+      previewError.value = '模型返回了空内容，请检查模型配置和系统提示词'
+    }
+  } catch (e: any) {
+    previewError.value = e.response?.data?.message || e.message || '网络请求失败'
+  } finally {
     previewLoading.value = false
   }
 }

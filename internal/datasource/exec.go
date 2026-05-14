@@ -189,16 +189,22 @@ func applyAuth(h map[string]string, authType string, auth map[string]any) {
 			h["Authorization"] = "Bearer " + t
 		}
 	case "api_key_header":
-		hk, _ := auth["header"].(string)
-		hv, _ := auth["value"].(string)
+		hk, _ := auth["header_name"].(string)
+		hv, _ := auth["api_key"].(string)
+		if hk == "" {
+			hk, _ = auth["header"].(string)
+		}
+		if hv == "" {
+			hv, _ = auth["value"].(string)
+		}
 		if hk != "" {
 			h[hk] = hv
 		}
 	case "custom_header":
-		hk, _ := auth["header"].(string)
-		hv, _ := auth["value"].(string)
-		if hk != "" {
-			h[hk] = hv
+		for k, v := range auth {
+			if s, ok := v.(string); ok && k != "" {
+				h[k] = s
+			}
 		}
 	}
 }
@@ -323,7 +329,10 @@ func ResolveParams(schema []byte, global map[string]any, overrides map[string]an
 			name, _ = m["param_name"].(string)
 		}
 		required, _ := m["required"].(bool)
-		defVal, hasDef := m["default"]
+		defVal, hasDef := m["default_value"]
+		if !hasDef {
+			defVal, hasDef = m["default"]
+		}
 		src, _ := m["source"].(map[string]any)
 		if src == nil {
 			// flat keys

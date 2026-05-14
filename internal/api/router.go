@@ -10,6 +10,12 @@ import (
 )
 
 func Register(r *gin.Engine, a *app.App) {
+	// Disable trailing-slash redirects. REST APIs have exact routes;
+	// a request to /api/v1/tasks/ should 404, not 301→/api/v1/tasks
+	// which causes infinite loops through nginx proxies.
+	r.RedirectTrailingSlash = false
+	r.RedirectFixedPath = false
+
 	r.Use(middleware.RequestID(), middleware.Recovery(zap.L()), middleware.CORS())
 
 	r.GET("/healthz", func(c *gin.Context) { c.JSON(200, gin.H{"status": "ok"}) })

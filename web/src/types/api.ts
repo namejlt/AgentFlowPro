@@ -312,6 +312,11 @@ export interface ImportMatchReport {
   missing_models: { import_name: string; import_id: string }[]
 }
 
+export interface ImportWorkflowResult {
+  session_id: string
+  match_report: ImportMatchReport
+}
+
 export interface ShareInfo {
   share_code: string
   share_url: string

@@ -31,7 +31,7 @@
       </el-row>
     </el-card>
 
-    <el-card>
+    <el-card v-loading="loading">
       <el-table :data="datasources" stripe>
         <el-table-column prop="name" label="名称" min-width="140" />
         <el-table-column prop="ds_type" label="类型" width="130">
@@ -108,12 +108,19 @@ function authTypeLabel(type: string) {
   return map[type] || type
 }
 
+const loading = ref(false)
+
 async function fetchList() {
+  loading.value = true
   try {
     const res = await getDataSources({ page: page.value, page_size: pageSize.value, keyword: keyword.value, type: filterType.value || undefined, category: filterCategory.value || undefined })
     datasources.value = res.data.data || []
     total.value = res.data.meta?.total || 0
-  } catch {}
+  } catch (e: any) {
+    ElMessage.error(e.message || '获取数据源列表失败')
+  } finally {
+    loading.value = false
+  }
 }
 
 function handleCreate() {
@@ -133,7 +140,9 @@ async function handleTest(ds: DataSourceItem) {
       ElMessage.error(`测试失败: ${res.data.data.error || '未知错误'}`)
     }
     fetchList()
-  } catch {}
+  } catch (e: any) {
+    ElMessage.error(e.message || '测试失败')
+  }
 }
 
 async function handleClone(ds: DataSourceItem) {
@@ -141,7 +150,9 @@ async function handleClone(ds: DataSourceItem) {
     await cloneDataSource(ds.id)
     ElMessage.success('复制成功')
     fetchList()
-  } catch {}
+  } catch (e: any) {
+    ElMessage.error(e.message || '复制失败')
+  }
 }
 
 async function handleDelete(ds: DataSourceItem) {
@@ -150,7 +161,9 @@ async function handleDelete(ds: DataSourceItem) {
     await deleteDataSource(ds.id)
     ElMessage.success('删除成功')
     fetchList()
-  } catch {}
+  } catch (e: any) {
+    ElMessage.error(e.message || '删除失败')
+  }
 }
 
 onMounted(fetchList)

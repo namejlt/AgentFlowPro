@@ -23,6 +23,15 @@ func (a *App) ListReports(c *gin.Context) {
 			q = q.Where("workflow_id = ?", id)
 		}
 	}
+	if kw := p.Keyword; kw != "" {
+		q = q.Where("title ILIKE ?", "%"+kw+"%")
+	}
+	if st := c.Query("status"); st != "" {
+		q = q.Where("status = ?", st)
+	}
+	if ar := c.Query("archived"); ar != "" {
+		q = q.Where("archived = ?", ar == "true")
+	}
 	var total int64
 	_ = q.Count(&total).Error
 	if err := q.Order("created_at desc").Offset(p.Offset).Limit(p.PageSize).Find(&list).Error; err != nil {
@@ -151,7 +160,11 @@ func (a *App) ArchiveReport(c *gin.Context) {
 		response.Fail(c, apperr.ErrBadRequest)
 		return
 	}
-	if err := a.DB.Model(&model.Report{}).Where("id = ? AND owner_id = ?", id, uid(c)).Update("archived", true).Error; err != nil {
+	var body struct {
+		Archived bool `json:"archived"`
+	}
+	_ = c.ShouldBindJSON(&body)
+	if err := a.DB.Model(&model.Report{}).Where("id = ? AND owner_id = ?", id, uid(c)).Update("archived", body.Archived).Error; err != nil {
 		response.Fail(c, apperr.ErrInternal)
 		return
 	}

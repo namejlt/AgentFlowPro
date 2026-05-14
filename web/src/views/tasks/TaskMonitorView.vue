@@ -126,16 +126,35 @@ const steps = ref<TaskStepItem[]>([])
 const activeTab = ref('output')
 
 const debateLogs = computed<DebateLog[]>(() => {
-  const logs: DebateLog[] = []
+  const result: DebateLog[] = []
   streamStore.logs.filter(l => l.event === 'debate_round').forEach(l => {
-    if (l.data?.agent_outputs) {
-      l.data.agent_outputs.forEach((a: any) => logs.push(a))
+    const outputs = l.data?.agent_outputs
+    if (outputs) {
+      if (Array.isArray(outputs)) {
+        result.push(...outputs.map((a: any) => ({
+          round: a.round || l.data.round,
+          agent_id: a.agent_id || '',
+          agent_name: a.agent_name || a.agent_id || '',
+          output: a.output || '',
+          timestamp: l.timestamp,
+        })))
+      } else if (typeof outputs === 'object') {
+        for (const [agentId, output] of Object.entries(outputs)) {
+          result.push({
+            round: l.data.round,
+            agent_id: agentId,
+            agent_name: agentId,
+            output: output as string,
+            timestamp: l.timestamp,
+          })
+        }
+      }
     }
   })
-  return logs
+  return result
 })
 
-const riskReviews = ref<RiskReview[]>([])
+const riskReviews = computed<RiskReview[]>(() => streamStore.riskItems)
 
 function statusType(status: string) {
   const map: Record<string, string> = { completed: 'success', failed: 'danger', running: 'warning', pending: 'info', queued: 'info', stopped: 'info', paused: 'warning' }

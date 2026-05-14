@@ -84,6 +84,20 @@
         <el-form-item v-if="form.ds_type === 'MANUAL_INPUT'" label="手动输入内容">
           <el-input v-model="manualContent" type="textarea" :rows="6" placeholder="输入静态数据" />
         </el-form-item>
+        <template v-if="form.ds_type === 'WEBSOCKET_STREAM'">
+          <el-form-item label="WebSocket URL">
+            <el-input v-model="form.url_template" placeholder="wss://example.com/stream" />
+          </el-form-item>
+          <el-form-item label="连接超时(ms)">
+            <el-input-number v-model="form.timeout_ms" :min="1000" :step="5000" />
+          </el-form-item>
+          <el-form-item label="Ping 间隔(秒)">
+            <el-input-number v-model="wsPingInterval" :min="5" :max="300" />
+          </el-form-item>
+          <el-form-item label="自动重连">
+            <el-switch v-model="wsAutoReconnect" />
+          </el-form-item>
+        </template>
       </el-form>
       <div style="text-align: right; display: flex; gap: 8px; justify-content: flex-end">
         <el-button @click="currentStep--">上一步</el-button>
@@ -222,6 +236,8 @@ const manualContent = ref('')
 const uploadFileId = ref('')
 const testResultVisible = ref(false)
 const testResult = reactive({ ok: false, error: '', data: null as any })
+const wsPingInterval = ref(30)
+const wsAutoReconnect = ref(true)
 
 const form = reactive<Partial<DataSourceItem>>({
   name: '',
@@ -258,13 +274,20 @@ function addParam() {
 
 async function nextStep(step: number) {
   if (step === 0) {
-    await step0FormRef.value?.validate()
+    const valid = await step0FormRef.value?.validate().catch(() => false)
+    if (!valid) return
   }
   currentStep.value++
 }
 
-function handleFileChange(file: any) {
-  uploadFile(file.raw)
+async function handleFileChange(file: any) {
+  try {
+    const res = await uploadFile(file.raw)
+    uploadFileId.value = res.data.data.file_id
+    ElMessage.success('上传成功')
+  } catch (e: any) {
+    ElMessage.error(e.message || '上传失败')
+  }
 }
 
 async function handleTest() {
@@ -278,7 +301,9 @@ async function handleTest() {
     testResult.error = res.data.data.error || ''
     testResult.data = res.data.data.extracted || res.data.data.raw
     testResultVisible.value = true
-  } catch {}
+  } catch (e: any) {
+    ElMessage.error(e.message || '测试失败')
+  }
 }
 
 async function handleSave() {
@@ -302,6 +327,10 @@ async function handleSave() {
 
     if (uploadFileId.value) form.uploaded_file_id = uploadFileId.value
 
+    if (form.ds_type === 'WEBSOCKET_STREAM') {
+      form.extra_config = { ping_interval_sec: wsPingInterval.value, auto_reconnect: wsAutoReconnect.value }
+    }
+
     if (isEdit.value) {
       await updateDataSource(route.params.id as string, form)
       ElMessage.success('更新成功')
@@ -310,7 +339,9 @@ async function handleSave() {
       ElMessage.success('创建成功')
     }
     router.push('/datasources')
-  } catch {} finally {
+  } catch (e: any) {
+    ElMessage.error(e.message || '保存失败')
+  } finally {
     saving.value = false
   }
 }
@@ -325,7 +356,9 @@ onMounted(async () => {
       }
       if (form.body_template) bodyTemplateStr.value = JSON.stringify(form.body_template, null, 2)
       if (form.auth_config) Object.assign(authConfig, form.auth_config)
-    } catch {}
+    } catch (e: any) {
+      ElMessage.error(e.message || '加载数据源失败')
+    }
   }
 })
 </script>

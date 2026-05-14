@@ -101,6 +101,7 @@ func (a *App) CreateDatasource(c *gin.Context) {
 		response.Fail(c, apperr.ErrConflict)
 		return
 	}
+	a.LogCreate(c, "datasource", ds.ID, gin.H{"name": ds.Name})
 	response.OK(c, a.toDSView(&ds))
 }
 
@@ -163,6 +164,7 @@ func (a *App) UpdateDatasource(c *gin.Context) {
 		return
 	}
 	_ = a.DB.First(&ds, "id = ?", id).Error
+	a.LogUpdate(c, "datasource", id, gin.H{"name": dto.Name})
 	response.OK(c, a.toDSView(&ds))
 }
 
@@ -206,6 +208,7 @@ func (a *App) DeleteDatasource(c *gin.Context) {
 		response.Fail(c, apperr.ErrInternal)
 		return
 	}
+	a.LogDelete(c, "datasource", id, gin.H{})
 	response.OK(c, gin.H{"ok": true})
 }
 
@@ -271,9 +274,9 @@ func (a *App) TestDatasource(c *gin.Context) {
 		_ = json.Unmarshal(b, &m)
 		return m, nil
 	})
-	st := "ok"
+	st := "success"
 	if err != nil {
-		st = "error"
+		st = "failed"
 	}
 	_ = a.DB.Model(&ds).Updates(map[string]any{"last_tested_at": time.Now(), "last_test_status": st}).Error
 
@@ -337,6 +340,7 @@ func (a *App) toDSView(ds *model.DataSource) gin.H {
 		"extra_config": json.RawMessage(ds.ExtraConfig), "uploaded_file_id": ds.UploadedFileID, "enabled": ds.Enabled,
 		"last_tested_at": ds.LastTestedAt, "last_test_status": ds.LastTestStatus,
 		"headers": gin.H{}, "auth_config": gin.H{},
+		"created_at": ds.CreatedAt, "updated_at": ds.UpdatedAt,
 	}
 	if ds.HeadersEncrypted != nil && *ds.HeadersEncrypted != "" {
 		h["headers"] = gin.H{"sealed": true}

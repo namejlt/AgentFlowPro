@@ -21,7 +21,7 @@
       </el-row>
     </el-card>
 
-    <el-card>
+    <el-card v-loading="loading">
       <el-table :data="logs" stripe>
         <el-table-column label="时间" width="170">
           <template #default="{ row }">{{ formatDateTime(row.created_at) }}</template>
@@ -56,6 +56,7 @@ import { ref, onMounted } from 'vue'
 import type { AuditLogItem } from '@/types'
 import { getAuditLogs } from '@/api/system'
 import { formatDateTime } from '@/utils/datetime'
+import { ElMessage } from 'element-plus'
 
 const logs = ref<AuditLogItem[]>([])
 const page = ref(1)
@@ -63,13 +64,19 @@ const pageSize = ref(20)
 const total = ref(0)
 const keyword = ref('')
 const filterAction = ref('')
+const loading = ref(false)
 
 async function fetchList() {
+  loading.value = true
   try {
     const res = await getAuditLogs({ page: page.value, page_size: pageSize.value, keyword: keyword.value, action: filterAction.value || undefined })
     logs.value = res.data.data || []
     total.value = res.data.meta?.total || 0
-  } catch {}
+  } catch (e: any) {
+    ElMessage.error(e.message || '获取审计日志失败')
+  } finally {
+    loading.value = false
+  }
 }
 
 onMounted(fetchList)

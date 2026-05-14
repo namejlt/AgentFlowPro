@@ -3,16 +3,7 @@
     <div class="page-header">
       <h2>{{ report.title || '报告详情' }}</h2>
       <div>
-        <el-dropdown trigger="click" @command="handleExport" style="margin-right: 8px">
-          <el-button><el-icon><Download /></el-icon>导出</el-button>
-          <template #dropdown>
-            <el-dropdown-menu>
-              <el-dropdown-item command="md">Markdown</el-dropdown-item>
-              <el-dropdown-item command="pdf">PDF</el-dropdown-item>
-              <el-dropdown-item command="docx">DOCX</el-dropdown-item>
-            </el-dropdown-menu>
-          </template>
-        </el-dropdown>
+        <ExportMenu style="margin-right: 8px" @export="handleExport" />
         <el-button @click="$router.push('/reports')">返回</el-button>
       </div>
     </div>
@@ -29,7 +20,7 @@
     <el-tabs v-model="activeTab">
       <el-tab-pane label="报告正文" name="content">
         <el-card>
-          <div class="markdown-body" v-html="renderMarkdown(report.content_md)" />
+          <MarkdownViewer :content="report.content_md" />
         </el-card>
       </el-tab-pane>
 
@@ -37,7 +28,7 @@
         <el-card>
           <el-collapse>
             <el-collapse-item v-for="(output, key) in report.agent_outputs" :key="key" :title="String(key)">
-              <div class="markdown-body" v-html="renderMarkdown(typeof output === 'string' ? output : JSON.stringify(output, null, 2))" />
+              <MarkdownViewer :content="typeof output === 'string' ? output : JSON.stringify(output, null, 2)" />
             </el-collapse-item>
           </el-collapse>
           <el-empty v-if="!report.agent_outputs || Object.keys(report.agent_outputs).length === 0" description="暂无智能体输出" />
@@ -48,7 +39,7 @@
         <el-card>
           <div v-for="log in report.debate_logs" :key="log.round + log.agent_id" class="debate-bubble" :class="log.round % 2 === 0 ? 'left' : 'right'">
             <div class="agent-name">{{ log.agent_name }} <span class="round-tag">第{{ log.round }}轮</span></div>
-            <div class="debate-content markdown-body" v-html="renderMarkdown(log.output)" />
+            <div class="debate-content"><MarkdownViewer :content="log.output" /></div>
           </div>
           <el-empty v-if="!report.debate_logs || report.debate_logs.length === 0" description="暂无辩论记录" />
         </el-card>
@@ -76,19 +67,16 @@
 import { ref, onMounted } from 'vue'
 import { useRoute } from 'vue-router'
 import type { ReportItem } from '@/types'
+import ExportMenu from '@/components/report/ExportMenu.vue'
+import MarkdownViewer from '@/components/report/MarkdownViewer.vue'
 import { getReport, exportReportMd, exportReportPdf, exportReportDocx } from '@/api/reports'
 import { formatDateTime, formatDuration } from '@/utils/datetime'
 import { downloadBlob } from '@/utils/download'
-import { marked } from 'marked'
 import { ElMessage } from 'element-plus'
 
 const route = useRoute()
 const report = ref<ReportItem>({} as ReportItem)
 const activeTab = ref('content')
-
-function renderMarkdown(content: string) {
-  return content ? marked(content) : ''
-}
 
 async function handleExport(format: string) {
   try {

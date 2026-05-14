@@ -170,7 +170,8 @@ function insertVariable(type: string) {
 }
 
 async function handleSave() {
-  await basicFormRef.value?.validate()
+  const valid = await basicFormRef.value?.validate().catch(() => false)
+  if (!valid) return
   saving.value = true
   try {
     if (isEdit.value) {
@@ -181,21 +182,29 @@ async function handleSave() {
       ElMessage.success('创建成功')
     }
     router.push('/agents')
-  } catch {} finally {
+  } catch (e: any) {
+    ElMessage.error(e.message || '保存失败')
+  } finally {
     saving.value = false
   }
 }
 
 onMounted(async () => {
-  const [mRes, dsRes] = await Promise.all([getModels(), getDataSources()])
-  models.value = mRes.data.data || []
-  datasources.value = dsRes.data.data || []
+  try {
+    const [mRes, dsRes] = await Promise.all([getModels(), getDataSources()])
+    models.value = mRes.data.data || []
+    datasources.value = dsRes.data.data || []
+  } catch (e: any) {
+    ElMessage.error(e.message || '加载数据失败')
+  }
 
   if (isEdit.value) {
     try {
       const res = await getAgent(route.params.id as string)
       Object.assign(form, res.data.data)
-    } catch {}
+    } catch (e: any) {
+      ElMessage.error(e.message || '加载智能体失败')
+    }
   }
 })
 </script>

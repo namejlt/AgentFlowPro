@@ -1,6 +1,7 @@
 package app
 
 import (
+	"encoding/json"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -73,10 +74,20 @@ func (a *App) Dashboard(c *gin.Context) {
 	})
 }
 
+// ListAuditLogs returns paginated audit logs with search and filter support.
 func (a *App) ListAuditLogs(c *gin.Context) {
 	p := pagination.FromQuery(c)
 	var list []model.OperationLog
 	q := a.DB.Model(&model.OperationLog{})
+	if kw := p.Keyword; kw != "" {
+		q = q.Where("action ILIKE ? OR resource_type ILIKE ? OR resource_id ILIKE ?", "%"+kw+"%", "%"+kw+"%", "%"+kw+"%")
+	}
+	if action := c.Query("action"); action != "" {
+		q = q.Where("action = ?", action)
+	}
+	if resType := c.Query("resource_type"); resType != "" {
+		q = q.Where("resource_type = ?", resType)
+	}
 	var total int64
 	_ = q.Count(&total).Error
 	if err := q.Order("created_at desc").Offset(p.Offset).Limit(p.PageSize).Find(&list).Error; err != nil {
@@ -85,7 +96,22 @@ func (a *App) ListAuditLogs(c *gin.Context) {
 	}
 	out := make([]gin.H, 0, len(list))
 	for _, o := range list {
-		out = append(out, gin.H{"id": o.ID.String(), "user_id": o.UserID, "action": o.Action, "resource_type": o.ResourceType, "resource_id": o.ResourceID, "created_at": o.CreatedAt})
+		var uid, rid, ip string
+		if o.UserID != nil {
+			uid = o.UserID.String()
+		}
+		if o.ResourceID != nil {
+			rid = o.ResourceID.String()
+		}
+		if o.IP != nil {
+			ip = *o.IP
+		}
+		out = append(out, gin.H{
+			"id": o.ID.String(), "user_id": uid,
+			"action": o.Action, "resource_type": o.ResourceType,
+			"resource_id": rid, "detail": json.RawMessage(o.Detail),
+			"ip": ip, "created_at": o.CreatedAt,
+		})
 	}
 	response.OKMeta(c, out, pagination.Meta(p, total))
 }

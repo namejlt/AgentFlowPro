@@ -29,7 +29,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, reactive } from 'vue'
+import { ref, reactive, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { useWorkflowEditorStore } from '@/stores/workflowEditor'
 import { createTask } from '@/api/tasks'
@@ -42,7 +42,20 @@ const submitting = ref(false)
 const execMode = ref('normal')
 const inputParams = reactive<Record<string, any>>({})
 
+watch(() => store.globalParams, (params) => {
+  if (!params) return
+  for (const p of params) {
+    if (p.default_value !== undefined && p.default_value !== '') {
+      inputParams[p.key] = p.default_value
+    }
+  }
+}, { immediate: true, deep: true })
+
 async function doExec() {
+  if (!props.workflowId) {
+    ElMessage.warning('请先保存工作流')
+    return
+  }
   submitting.value = true
   try {
     const res = await createTask({
@@ -50,10 +63,13 @@ async function doExec() {
       input_params: { ...inputParams },
       mode: execMode.value,
     })
+    const taskId = (res.data.data as any).task_id || res.data.data.id
     ElMessage.success('任务已启动')
     store.execDialogVisible = false
-    router.push(`/tasks/${res.data.data.id}`)
-  } catch {} finally {
+    router.push(`/tasks/${taskId}`)
+  } catch (e: any) {
+    ElMessage.error(e?.message || '任务启动失败')
+  } finally {
     submitting.value = false
   }
 }

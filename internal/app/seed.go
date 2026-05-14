@@ -8,6 +8,7 @@ import (
 	"golang.org/x/crypto/bcrypt"
 	"gorm.io/gorm"
 
+	"github.com/namejlt/AgentFlowPro/internal/crypto"
 	"github.com/namejlt/AgentFlowPro/internal/model"
 )
 
@@ -41,12 +42,12 @@ func (a *App) Seed(ctx context.Context) error {
 	}
 
 	// Seed LLM Models (placeholder API keys, user must configure real ones)
-	if err := seedLLMModels(ctx, a.DB, adminID); err != nil {
+	if err := seedLLMModels(ctx, a.DB, adminID, a.Cfg.EncryptionKey); err != nil {
 		return err
 	}
 
 	// Seed DataSources (real production-ready endpoints)
-	if err := seedDataSources(ctx, a.DB, adminID); err != nil {
+	if err := seedDataSources(ctx, a.DB, adminID, a.Cfg.EncryptionKey); err != nil {
 		return err
 	}
 
@@ -70,7 +71,14 @@ func (a *App) Seed(ctx context.Context) error {
 
 // seedLLMModels creates built-in LLM model configurations.
 // All models use placeholder API keys that must be replaced by the user.
-func seedLLMModels(ctx context.Context, db *gorm.DB, ownerID uuid.UUID) error {
+func seedLLMModels(ctx context.Context, db *gorm.DB, ownerID uuid.UUID, encKey []byte) error {
+	plaintextKeys := []string{
+		"[PLEASE_SET_REAL_OPENAI_API_KEY]",
+		"[PLEASE_SET_REAL_OPENAI_API_KEY]",
+		"[PLEASE_SET_REAL_DEEPSEEK_API_KEY]",
+		"[PLEASE_SET_REAL_ANTHROPIC_API_KEY]",
+		"[PLEASE_SET_REAL_DASHSCOPE_API_KEY]",
+	}
 	models := []model.LLMModel{
 		{
 			ID:              uuid.MustParse("00000000-0000-0000-0000-000000000101"),
@@ -78,7 +86,6 @@ func seedLLMModels(ctx context.Context, db *gorm.DB, ownerID uuid.UUID) error {
 			Vendor:          "OpenAI",
 			Endpoint:        "https://api.openai.com/v1/chat/completions",
 			ModelID:         "gpt-4o",
-			APIKeyEncrypted: "[PLEASE_SET_REAL_OPENAI_API_KEY]",
 			Temperature:     0.7,
 			MaxTokens:       4096,
 			TimeoutMS:       60000,
@@ -94,7 +101,6 @@ func seedLLMModels(ctx context.Context, db *gorm.DB, ownerID uuid.UUID) error {
 			Vendor:          "OpenAI",
 			Endpoint:        "https://api.openai.com/v1/chat/completions",
 			ModelID:         "gpt-4o-mini",
-			APIKeyEncrypted: "[PLEASE_SET_REAL_OPENAI_API_KEY]",
 			Temperature:     0.7,
 			MaxTokens:       4096,
 			TimeoutMS:       60000,
@@ -110,7 +116,6 @@ func seedLLMModels(ctx context.Context, db *gorm.DB, ownerID uuid.UUID) error {
 			Vendor:          "DeepSeek",
 			Endpoint:        "https://api.deepseek.com/v1/chat/completions",
 			ModelID:         "deepseek-chat",
-			APIKeyEncrypted: "[PLEASE_SET_REAL_DEEPSEEK_API_KEY]",
 			Temperature:     0.7,
 			MaxTokens:       4096,
 			TimeoutMS:       60000,
@@ -126,7 +131,6 @@ func seedLLMModels(ctx context.Context, db *gorm.DB, ownerID uuid.UUID) error {
 			Vendor:          "Anthropic",
 			Endpoint:        "https://api.anthropic.com/v1/messages",
 			ModelID:         "claude-3-5-sonnet-20241022",
-			APIKeyEncrypted: "[PLEASE_SET_REAL_ANTHROPIC_API_KEY]",
 			Temperature:     0.7,
 			MaxTokens:       4096,
 			TimeoutMS:       60000,
@@ -142,7 +146,6 @@ func seedLLMModels(ctx context.Context, db *gorm.DB, ownerID uuid.UUID) error {
 			Vendor:          "Alibaba",
 			Endpoint:        "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions",
 			ModelID:         "qwen-max",
-			APIKeyEncrypted: "[PLEASE_SET_REAL_DASHSCOPE_API_KEY]",
 			Temperature:     0.7,
 			MaxTokens:       4096,
 			TimeoutMS:       60000,
@@ -153,7 +156,12 @@ func seedLLMModels(ctx context.Context, db *gorm.DB, ownerID uuid.UUID) error {
 			CreatedBy:       &ownerID,
 		},
 	}
-	for _, m := range models {
+	for i, m := range models {
+		sealed, err := crypto.Seal(encKey, []byte(plaintextKeys[i]))
+		if err != nil {
+			return err
+		}
+		m.APIKeyEncrypted = sealed
 		if err := db.WithContext(ctx).Create(&m).Error; err != nil {
 			return err
 		}
@@ -163,7 +171,7 @@ func seedLLMModels(ctx context.Context, db *gorm.DB, ownerID uuid.UUID) error {
 
 // seedDataSources creates built-in data sources with real production-ready endpoints.
 // HTTP_GET sources use publicly available APIs, MANUAL_INPUT sources allow user-provided data.
-func seedDataSources(ctx context.Context, db *gorm.DB, ownerID uuid.UUID) error {
+func seedDataSources(ctx context.Context, db *gorm.DB, ownerID uuid.UUID, encKey []byte) error {
 	sources := []model.DataSource{
 		{
 			ID:          uuid.MustParse("00000000-0000-0000-0000-000000000201"),
@@ -293,7 +301,6 @@ func seedDataSources(ctx context.Context, db *gorm.DB, ownerID uuid.UUID) error 
 			TimeoutMS:           10000,
 			RetryCount:          2,
 			AuthType:            "api_key_header",
-			AuthConfigEncrypted: strPtr(`{"header_name":"X-Api-Key","api_key":"[PLEASE_SET_NEWSAPI_KEY]"}`),
 			ParamsSchema: mustJSON([]map[string]interface{}{
 				{"name": "keyword", "type": "string", "required": true, "default_value": "人工智能", "description": "搜索关键词", "source": "global_var"},
 				{"name": "limit", "type": "number", "required": true, "default_value": "10", "description": "返回条数(最大100)", "source": "fixed_value"},
@@ -355,6 +362,14 @@ func seedDataSources(ctx context.Context, db *gorm.DB, ownerID uuid.UUID) error 
 		},
 	}
 	for _, s := range sources {
+		if s.AuthType == "api_key_header" {
+			authJSON := map[string]string{"header_name": "X-Api-Key", "api_key": "[PLEASE_SET_NEWSAPI_KEY]"}
+			sealed, err := crypto.Seal(encKey, jbytes(authJSON))
+			if err != nil {
+				return err
+			}
+			s.AuthConfigEncrypted = strPtr(sealed)
+		}
 		if err := db.WithContext(ctx).Create(&s).Error; err != nil {
 			return err
 		}

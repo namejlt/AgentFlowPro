@@ -7,7 +7,7 @@
       </el-button>
     </div>
 
-    <el-card>
+    <el-card v-loading="loading">
       <el-table :data="users" stripe>
         <el-table-column prop="username" label="用户名" min-width="120" />
         <el-table-column prop="email" label="邮箱" min-width="180" />
@@ -87,11 +87,18 @@ const formRules = {
   role: [{ required: true, message: '请选择角色', trigger: 'change' }],
 }
 
+const loading = ref(false)
+
 async function fetchList() {
+  loading.value = true
   try {
     const res = await getUsers()
     users.value = res.data.data || []
-  } catch {}
+  } catch (e: any) {
+    ElMessage.error(e.message || '获取用户列表失败')
+  } finally {
+    loading.value = false
+  }
 }
 
 function showCreateDialog() {
@@ -107,7 +114,8 @@ function handleEdit(row: UserItem) {
 }
 
 async function handleSave() {
-  await formRef.value?.validate()
+  const valid = await formRef.value?.validate().catch(() => false)
+  if (!valid) return
   saving.value = true
   try {
     if (editingId.value) {
@@ -119,7 +127,9 @@ async function handleSave() {
     }
     dialogVisible.value = false
     fetchList()
-  } catch {} finally {
+  } catch (e: any) {
+    ElMessage.error(e.message || '保存失败')
+  } finally {
     saving.value = false
   }
 }

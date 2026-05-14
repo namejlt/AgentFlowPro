@@ -7,7 +7,7 @@
       </el-button>
     </div>
 
-    <el-card>
+    <el-card v-loading="loading">
       <el-table :data="models" stripe>
         <el-table-column prop="name" label="展示名" min-width="120" />
         <el-table-column prop="vendor" label="厂商" width="100" />
@@ -132,11 +132,18 @@ const formRules = {
   api_key: [{ required: true, message: '请输入 API Key', trigger: 'blur' }],
 }
 
+const loading = ref(false)
+
 async function fetchList() {
+  loading.value = true
   try {
     const res = await getModels()
     models.value = res.data.data || []
-  } catch {}
+  } catch (e: any) {
+    ElMessage.error(e.message || '获取模型列表失败')
+  } finally {
+    loading.value = false
+  }
 }
 
 function showCreateDialog() {
@@ -164,7 +171,9 @@ async function handleSave() {
     }
     dialogVisible.value = false
     fetchList()
-  } catch {} finally {
+  } catch (e: any) {
+    ElMessage.error(e.message || '保存失败')
+  } finally {
     saving.value = false
   }
 }
@@ -176,7 +185,9 @@ async function handleTest(row: LlmModelItem) {
     testResultData.latency_ms = res.data.data.latency_ms
     testResultData.error = res.data.data.error || ''
     testResultVisible.value = true
-  } catch {}
+  } catch (e: any) {
+    ElMessage.error(e.message || '测试失败')
+  }
 }
 
 async function handleSetDefault(row: LlmModelItem) {
@@ -184,7 +195,9 @@ async function handleSetDefault(row: LlmModelItem) {
     await setDefaultModel(row.id)
     ElMessage.success('已设为默认模型')
     fetchList()
-  } catch {}
+  } catch (e: any) {
+    ElMessage.error(e.message || '设置失败')
+  }
 }
 
 async function handleDelete(row: LlmModelItem) {
@@ -193,7 +206,9 @@ async function handleDelete(row: LlmModelItem) {
     await deleteModel(row.id)
     ElMessage.success('删除成功')
     fetchList()
-  } catch {}
+  } catch (e: any) {
+    ElMessage.error(e.message || '删除失败')
+  }
 }
 
 onMounted(fetchList)

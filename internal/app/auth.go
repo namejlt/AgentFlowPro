@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
 	"golang.org/x/crypto/bcrypt"
 
 	"github.com/namejlt/AgentFlowPro/internal/auth"
@@ -27,10 +28,12 @@ func (a *App) Login(c *gin.Context) {
 	}
 	var u model.User
 	if err := a.DB.Where("email = ?", strings.ToLower(strings.TrimSpace(req.Email))).First(&u).Error; err != nil {
+		a.LogLogin(c, uuid.Nil, false)
 		response.Fail(c, apperr.ErrUnauthorized)
 		return
 	}
 	if bcrypt.CompareHashAndPassword([]byte(u.PasswordHash), []byte(req.Password)) != nil {
+		a.LogLogin(c, u.ID, false)
 		response.Fail(c, apperr.ErrUnauthorized)
 		return
 	}
@@ -41,6 +44,7 @@ func (a *App) Login(c *gin.Context) {
 	}
 	now := time.Now()
 	_ = a.DB.Model(&u).Update("last_login_at", now).Error
+	a.LogLogin(c, u.ID, true)
 	response.OK(c, gin.H{
 		"access_token": tok,
 		"expires_in":   int(a.Cfg.JWTExpire.Seconds()),
@@ -84,5 +88,5 @@ func (a *App) Me(c *gin.Context) {
 		response.Fail(c, apperr.ErrNotFound)
 		return
 	}
-	response.OK(c, gin.H{"id": u.ID.String(), "username": u.Username, "email": u.Email, "role": u.Role})
+	response.OK(c, gin.H{"id": u.ID.String(), "username": u.Username, "email": u.Email, "role": u.Role, "last_login_at": u.LastLoginAt, "created_at": u.CreatedAt})
 }
