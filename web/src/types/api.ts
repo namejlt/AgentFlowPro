@@ -130,7 +130,7 @@ export interface AgentItem {
   icon?: string
   system_prompt: string
   llm_model_id?: string
-  datasource_id?: string
+  datasource_ids?: string[]
   param_mappings: ParamMapping[]
   output_format: 'plaintext' | 'markdown' | 'json'
   output_lang: 'zh-CN' | 'en-US'

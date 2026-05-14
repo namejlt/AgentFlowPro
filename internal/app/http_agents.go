@@ -19,18 +19,18 @@ import (
 )
 
 type agentDTO struct {
-	Name           string     `json:"name"`
-	RoleDesc       *string    `json:"role_desc"`
-	Tags           []string   `json:"tags"`
-	Icon           *string    `json:"icon"`
-	SystemPrompt   string     `json:"system_prompt"`
-	LLMModelID     *uuid.UUID `json:"llm_model_id"`
-	DataSourceID   *uuid.UUID `json:"datasource_id"`
-	ParamMappings  []any      `json:"param_mappings"`
-	OutputFormat   string     `json:"output_format"`
-	OutputLang     string     `json:"output_lang"`
-	MaxOutputChars int        `json:"max_output_chars"`
-	Enabled        *bool      `json:"enabled"`
+	Name           string       `json:"name"`
+	RoleDesc       *string      `json:"role_desc"`
+	Tags           []string     `json:"tags"`
+	Icon           *string      `json:"icon"`
+	SystemPrompt   string       `json:"system_prompt"`
+	LLMModelID     *uuid.UUID   `json:"llm_model_id"`
+	DataSourceIDs  []uuid.UUID  `json:"datasource_ids"`
+	ParamMappings  []any        `json:"param_mappings"`
+	OutputFormat   string       `json:"output_format"`
+	OutputLang     string       `json:"output_lang"`
+	MaxOutputChars int          `json:"max_output_chars"`
+	Enabled        *bool        `json:"enabled"`
 }
 
 func (a *App) CreateAgent(c *gin.Context) {
@@ -41,7 +41,7 @@ func (a *App) CreateAgent(c *gin.Context) {
 	}
 	ag := model.Agent{
 		OwnerID: uid(c), Name: dto.Name, RoleDesc: dto.RoleDesc, Tags: jbytes(dto.Tags), Icon: dto.Icon,
-		SystemPrompt: dto.SystemPrompt, LLMModelID: dto.LLMModelID, DataSourceID: dto.DataSourceID,
+		SystemPrompt: dto.SystemPrompt, LLMModelID: dto.LLMModelID, DataSourceIDs: jbytes(dto.DataSourceIDs),
 		ParamMappings: jbytes(dto.ParamMappings), OutputFormat: firstStr(dto.OutputFormat, "markdown"),
 		OutputLang: firstStr(dto.OutputLang, "zh-CN"), MaxOutputChars: dto.MaxOutputChars, Enabled: true,
 	}
@@ -74,7 +74,7 @@ func (a *App) UpdateAgent(c *gin.Context) {
 	}
 	up := map[string]any{
 		"name": dto.Name, "role_desc": dto.RoleDesc, "tags": jbytes(dto.Tags), "icon": dto.Icon,
-		"system_prompt": dto.SystemPrompt, "llm_model_id": dto.LLMModelID, "datasource_id": dto.DataSourceID,
+		"system_prompt": dto.SystemPrompt, "llm_model_id": dto.LLMModelID, "datasource_ids": jbytes(dto.DataSourceIDs),
 		"param_mappings": jbytes(dto.ParamMappings), "output_format": firstStr(dto.OutputFormat, ag.OutputFormat),
 		"output_lang": firstStr(dto.OutputLang, ag.OutputLang), "max_output_chars": dto.MaxOutputChars,
 	}
@@ -169,9 +169,11 @@ func (a *App) toAgentView(ag *model.Agent) gin.H {
 	var wfCount int64
 	agentIDStr := ag.ID.String()
 	_ = a.DB.Raw(`SELECT COUNT(1) FROM workflows WHERE deleted_at IS NULL AND nodes::text ILIKE '%' || ? || '%'`, agentIDStr).Scan(&wfCount).Error
+	var dsIDs []uuid.UUID
+	_ = json.Unmarshal(ag.DataSourceIDs, &dsIDs)
 	h := gin.H{
 		"id": ag.ID.String(), "name": ag.Name, "role_desc": ag.RoleDesc, "tags": tags, "icon": ag.Icon,
-		"system_prompt": ag.SystemPrompt, "llm_model_id": ag.LLMModelID, "datasource_id": ag.DataSourceID,
+		"system_prompt": ag.SystemPrompt, "llm_model_id": ag.LLMModelID, "datasource_ids": dsIDs,
 		"param_mappings": json.RawMessage(ag.ParamMappings), "output_format": ag.OutputFormat, "output_lang": ag.OutputLang,
 		"max_output_chars": ag.MaxOutputChars, "enabled": ag.Enabled, "referenced_workflows_estimate": wfCount,
 		"created_at": ag.CreatedAt, "updated_at": ag.UpdatedAt,
@@ -219,40 +221,48 @@ func (a *App) PreviewAgent(c *gin.Context) {
 		return
 	}
 	dsText := ""
-	if ag.DataSourceID != nil {
+	var dsIDs []uuid.UUID
+	_ = json.Unmarshal(ag.DataSourceIDs, &dsIDs)
+	for _, dsID := range dsIDs {
 		var ds model.DataSource
-		if err := a.DB.First(&ds, "id = ?", *ag.DataSourceID).Error; err == nil {
-			params, err := datasource.ResolveParams(ds.ParamsSchema, body.Globals, map[string]any{})
-			if err == nil {
-				ex := datasource.NewExecutor()
-				res, err := ex.Execute(c.Request.Context(), &ds, datasource.ExecuteInput{GlobalVars: body.Globals, Params: params}, func(sealed string) (map[string]string, error) {
-					if sealed == "" {
-						return map[string]string{}, nil
-					}
-					b, err := crypto.Open(a.Cfg.EncryptionKey, sealed)
-					if err != nil {
-						return nil, err
-					}
-					var m map[string]string
-					_ = json.Unmarshal(b, &m)
-					return m, nil
-				}, func(sealed string) (map[string]any, error) {
-					if ds.AuthConfigEncrypted == nil || *ds.AuthConfigEncrypted == "" {
-						return map[string]any{}, nil
-					}
-					b, err := crypto.Open(a.Cfg.EncryptionKey, *ds.AuthConfigEncrypted)
-					if err != nil {
-						return nil, err
-					}
-					var m map[string]any
-					_ = json.Unmarshal(b, &m)
-					return m, nil
-				})
-				if err == nil {
-					dsText = res.Extracted
-				}
-			}
+		if err := a.DB.First(&ds, "id = ?", dsID).Error; err != nil {
+			continue
 		}
+		params, err := datasource.ResolveParams(ds.ParamsSchema, body.Globals, map[string]any{})
+		if err != nil {
+			continue
+		}
+		ex := datasource.NewExecutor()
+		res, err := ex.Execute(c.Request.Context(), &ds, datasource.ExecuteInput{GlobalVars: body.Globals, Params: params}, func(sealed string) (map[string]string, error) {
+			if sealed == "" {
+				return map[string]string{}, nil
+			}
+			b, err := crypto.Open(a.Cfg.EncryptionKey, sealed)
+			if err != nil {
+				return nil, err
+			}
+			var m map[string]string
+			_ = json.Unmarshal(b, &m)
+			return m, nil
+		}, func(sealed string) (map[string]any, error) {
+			if ds.AuthConfigEncrypted == nil || *ds.AuthConfigEncrypted == "" {
+				return map[string]any{}, nil
+			}
+			b, err := crypto.Open(a.Cfg.EncryptionKey, *ds.AuthConfigEncrypted)
+			if err != nil {
+				return nil, err
+			}
+			var m map[string]any
+			_ = json.Unmarshal(b, &m)
+			return m, nil
+		})
+		if err != nil {
+			continue
+		}
+		if dsText != "" {
+			dsText += "\n\n---\n\n"
+		}
+		dsText += fmt.Sprintf("【%s】\n%s", ds.Name, res.Extracted)
 	}
 	extras := map[string]string{"datasource.result": dsText}
 	for k, v := range body.Globals {

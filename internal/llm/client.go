@@ -88,7 +88,7 @@ func isRetryable(err error) bool {
 
 func (c *Client) doOnce(ctx context.Context, o ChatOpts) (*ChatResponse, error) {
 	if o.Timeout <= 0 {
-		o.Timeout = 60 * time.Second
+		o.Timeout = 180 * time.Second
 	}
 	ctx, cancel := context.WithTimeout(ctx, o.Timeout)
 	defer cancel()

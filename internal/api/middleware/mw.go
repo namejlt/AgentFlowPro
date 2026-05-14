@@ -39,19 +39,23 @@ type JWTConfig struct {
 
 func JWT(cfg JWTConfig) gin.HandlerFunc {
 	return func(c *gin.Context) {
+		var tok string
 		h := c.GetHeader("Authorization")
-		if h == "" {
+		if h != "" {
+			parts := strings.SplitN(h, " ", 2)
+			if len(parts) == 2 && strings.ToLower(parts[0]) == "bearer" {
+				tok = strings.TrimSpace(parts[1])
+			}
+		}
+		// Fallback: EventSource does not support custom headers, so accept ?token=xxx
+		if tok == "" {
+			tok = c.Query("token")
+		}
+		if tok == "" {
 			response.Fail(c, apperr.ErrUnauthorized)
 			c.Abort()
 			return
 		}
-		parts := strings.SplitN(h, " ", 2)
-		if len(parts) != 2 || strings.ToLower(parts[0]) != "bearer" {
-			response.Fail(c, apperr.ErrUnauthorized)
-			c.Abort()
-			return
-		}
-		tok := strings.TrimSpace(parts[1])
 		cl, err := auth.ParseJWT(cfg.Secret, tok)
 		if err != nil {
 			response.Fail(c, apperr.ErrUnauthorized)

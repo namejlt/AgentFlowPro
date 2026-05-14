@@ -200,26 +200,24 @@ func seedDataSources(ctx context.Context, db *gorm.DB, ownerID uuid.UUID, encKey
 		{
 			ID:          uuid.MustParse("00000000-0000-0000-0000-000000000202"),
 			OwnerID:     ownerID,
-			Name:        "股票历史 K 线",
-			Description: strPtr("获取股票历史 K 线数据，支持日K、周K、月K。数据源：新浪财经"),
+			Name:        "股票历史行情",
+			Description: strPtr("获取股票历史日K线行情数据，包含开盘/收盘/最高/最低/成交量。数据源：腾讯财经"),
 			Category:    strPtr("finance"),
-			Tags:        mustJSON([]string{"finance", "stock", "history"}),
+			Tags:        mustJSON([]string{"finance", "stock", "history", "kline"}),
 			Icon:        strPtr("Histogram"),
 			DSType:      "HTTP_GET",
-			URLTemplate: strPtr("https://quotes.sina.cn/cn/api/quotes.php?symbol={{stock_code}}&scale={{scale}}&datalen={{count}}"),
+			URLTemplate: strPtr("https://web.ifzq.gtimg.cn/appstock/app/minute/query?code={{stock_code}}"),
 			HTTPMethod:  strPtr("GET"),
 			ContentType: strPtr("application/json"),
 			TimeoutMS:   15000,
 			RetryCount:  2,
 			AuthType:    "none",
 			ParamsSchema: mustJSON([]map[string]interface{}{
-				{"name": "stock_code", "type": "string", "required": true, "default_value": "sh600519", "description": "股票代码，如 sh600519", "source": "global_var"},
-				{"name": "scale", "type": "string", "required": true, "default_value": "240", "description": "时间间隔(分钟): 240=日K 1200=周K", "source": "fixed_value"},
-				{"name": "count", "type": "number", "required": true, "default_value": "30", "description": "返回条数", "source": "fixed_value"},
+				{"name": "stock_code", "type": "string", "required": true, "default_value": "sh600519", "description": "股票代码，sh600519/sz000001", "source": "global_var"},
 			}),
 			CachePolicy:      "ttl",
 			CacheTTLSeconds:  intPtr(300),
-			ResponseJSONPath: strPtr("$"),
+			ResponseJSONPath: strPtr("$.data"),
 			ExtraConfig:      mustJSON(map[string]interface{}{}),
 			Enabled:          true,
 		},
@@ -287,27 +285,74 @@ func seedDataSources(ctx context.Context, db *gorm.DB, ownerID uuid.UUID, encKey
 			Enabled:          true,
 		},
 		{
-			ID:                  uuid.MustParse("00000000-0000-0000-0000-000000000206"),
-			OwnerID:             ownerID,
-			Name:                "新闻资讯聚合",
-			Description:         strPtr("获取指定关键词的最新新闻资讯。需配置 NewsAPI Key"),
-			Category:            strPtr("general"),
-			Tags:                mustJSON([]string{"news", "general", "api"}),
-			Icon:                strPtr("News"),
-			DSType:              "HTTP_GET",
-			URLTemplate:         strPtr("https://newsapi.org/v2/everything?q={{keyword}}&sortBy=publishedAt&pageSize={{limit}}&language=zh"),
-			HTTPMethod:          strPtr("GET"),
-			ContentType:         strPtr("application/json"),
-			TimeoutMS:           10000,
-			RetryCount:          2,
-			AuthType:            "api_key_header",
+			ID:          uuid.MustParse("00000000-0000-0000-0000-000000000206"),
+			OwnerID:     ownerID,
+			Name:        "股票基本面数据",
+			Description: strPtr("获取股票基本面数据，包括市盈率(PE)、市净率(PB)、市值、换手率等关键指标。数据源：腾讯财经"),
+			Category:    strPtr("finance"),
+			Tags:        mustJSON([]string{"finance", "stock", "fundamental", "valuation"}),
+			Icon:        strPtr("DataAnalysis"),
+			DSType:      "HTTP_GET",
+			URLTemplate: strPtr("https://qt.gtimg.cn/q={{stock_code}}"),
+			HTTPMethod:  strPtr("GET"),
+			ContentType: strPtr("text/plain"),
+			TimeoutMS:   10000,
+			RetryCount:  2,
+			AuthType:    "none",
 			ParamsSchema: mustJSON([]map[string]interface{}{
-				{"name": "keyword", "type": "string", "required": true, "default_value": "人工智能", "description": "搜索关键词", "source": "global_var"},
-				{"name": "limit", "type": "number", "required": true, "default_value": "10", "description": "返回条数(最大100)", "source": "fixed_value"},
+				{"name": "stock_code", "type": "string", "required": true, "default_value": "sh600519", "description": "股票代码，如 sh600519、sz000001", "source": "global_var"},
 			}),
 			CachePolicy:      "ttl",
-			CacheTTLSeconds:  intPtr(300),
-			ResponseJSONPath: strPtr("$.articles"),
+			CacheTTLSeconds:  intPtr(120),
+			ResponseJSONPath: strPtr("$"),
+			ExtraConfig:      mustJSON(map[string]interface{}{}),
+			Enabled:          true,
+		},
+		{
+			ID:          uuid.MustParse("00000000-0000-0000-0000-000000000209"),
+			OwnerID:     ownerID,
+			Name:        "股票财务指标",
+			Description: strPtr("获取股票的关键财务指标，包括PE/PB/ROE/营收增长率等。数据源：腾讯财经"),
+			Category:    strPtr("finance"),
+			Tags:        mustJSON([]string{"finance", "stock", "financial", "valuation"}),
+			Icon:        strPtr("DataAnalysis"),
+			DSType:      "HTTP_GET",
+			URLTemplate: strPtr("https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param={{stock_code}},day,,,,,20,qfq"),
+			HTTPMethod:  strPtr("GET"),
+			ContentType: strPtr("application/json"),
+			TimeoutMS:   10000,
+			RetryCount:  2,
+			AuthType:    "none",
+			ParamsSchema: mustJSON([]map[string]interface{}{
+				{"name": "stock_code", "type": "string", "required": true, "default_value": "sh600519", "description": "股票代码，如 sh600519", "source": "global_var"},
+			}),
+			CachePolicy:      "ttl",
+			CacheTTLSeconds:  intPtr(600),
+			ResponseJSONPath: strPtr("$.data"),
+			ExtraConfig:      mustJSON(map[string]interface{}{}),
+			Enabled:          true,
+		},
+		{
+			ID:          uuid.MustParse("00000000-0000-0000-0000-00000000020a"),
+			OwnerID:     ownerID,
+			Name:        "沪深行情概览",
+			Description: strPtr("获取沪深市场整体行情概览，包括大盘指数、涨跌家数、成交额等。数据源：腾讯财经"),
+			Category:    strPtr("finance"),
+			Tags:        mustJSON([]string{"finance", "stock", "market", "index"}),
+			Icon:        strPtr("DataBoard"),
+			DSType:      "HTTP_GET",
+			URLTemplate: strPtr("https://qt.gtimg.cn/q=sh000001,sz399001,sz399006,sh000688,sh000300"),
+			HTTPMethod:  strPtr("GET"),
+			ContentType: strPtr("text/plain"),
+			TimeoutMS:   10000,
+			RetryCount:  2,
+			AuthType:    "none",
+			ParamsSchema: mustJSON([]map[string]interface{}{
+				{"name": "market", "type": "string", "required": false, "default_value": "all", "description": "市场范围：all/沪深/创业板/科创板", "source": "global_var"},
+			}),
+			CachePolicy:      "ttl",
+			CacheTTLSeconds:  intPtr(120),
+			ResponseJSONPath: strPtr("$"),
 			ExtraConfig:      mustJSON(map[string]interface{}{}),
 			Enabled:          true,
 		},
@@ -360,16 +405,32 @@ func seedDataSources(ctx context.Context, db *gorm.DB, ownerID uuid.UUID, encKey
 			ExtraConfig:      mustJSON(map[string]interface{}{}),
 			Enabled:          true,
 		},
+		{
+			ID:          uuid.MustParse("00000000-0000-0000-0000-00000000020b"),
+			OwnerID:     ownerID,
+			Name:        "年报财务数据",
+			Description: strPtr("获取上市公司多年年报财务数据，包括营收、净利润、ROE、每股收益等。数据源：东方财富数据中心"),
+			Category:    strPtr("finance"),
+			Tags:        mustJSON([]string{"finance", "stock", "annual", "financial", "report"}),
+			Icon:        strPtr("DataSheet"),
+			DSType:      "HTTP_GET",
+			URLTemplate: strPtr("https://datacenter-web.eastmoney.com/api/data/v1/get?reportName=RPT_LICO_FN_CPD&columns=SECUCODE,SECURITY_NAME_ABBR,REPORT_DATE,BASIC_EPS,WEIGHTAVG_ROE,TOTAL_OPERATE_INCOME,PARENT_NETPROFIT,OPERATE_INCOME_BEFORE_ACCT&filter=(SECUCODE=%22{{stock_code_full}}%22)&pageNumber=1&pageSize=5&sortTypes=-1&sortColumns=REPORT_DATE"),
+			HTTPMethod:  strPtr("GET"),
+			ContentType: strPtr("application/json"),
+			TimeoutMS:   15000,
+			RetryCount:  2,
+			AuthType:    "none",
+			ParamsSchema: mustJSON([]map[string]interface{}{
+				{"name": "stock_code_full", "type": "string", "required": true, "default_value": "SH600519", "description": "股票代码（大写含市场前缀），如 SH600519、SZ000001、HK00700", "source": "global_var"},
+			}),
+			CachePolicy:      "ttl",
+			CacheTTLSeconds:  intPtr(86400),
+			ResponseJSONPath: strPtr("$.result.data"),
+			ExtraConfig:      mustJSON(map[string]interface{}{}),
+			Enabled:          true,
+		},
 	}
 	for _, s := range sources {
-		if s.AuthType == "api_key_header" {
-			authJSON := map[string]string{"header_name": "X-Api-Key", "api_key": "[PLEASE_SET_NEWSAPI_KEY]"}
-			sealed, err := crypto.Seal(encKey, jbytes(authJSON))
-			if err != nil {
-				return err
-			}
-			s.AuthConfigEncrypted = strPtr(sealed)
-		}
 		if err := db.WithContext(ctx).Create(&s).Error; err != nil {
 			return err
 		}
@@ -400,7 +461,7 @@ func seedAgents(ctx context.Context, db *gorm.DB, ownerID uuid.UUID) error {
 
 请用 Markdown 格式输出专业分析报告，包含数据表格和关键指标。`,
 			LLMModelID:     &defaultModelID,
-			DataSourceID:   uuidPtr(uuid.MustParse("00000000-0000-0000-0000-000000000201")),
+			DataSourceIDs:  jbytes([]uuid.UUID{uuid.MustParse("00000000-0000-0000-0000-000000000201"), uuid.MustParse("00000000-0000-0000-0000-000000000202"), uuid.MustParse("00000000-0000-0000-0000-000000000209")}),
 			ParamMappings:  mustJSON([]map[string]interface{}{}),
 			OutputFormat:   "markdown",
 			OutputLang:     "zh-CN",
@@ -423,7 +484,7 @@ func seedAgents(ctx context.Context, db *gorm.DB, ownerID uuid.UUID) error {
 
 输出格式为 Markdown，要求逻辑清晰、数据支撑充分。`,
 			LLMModelID:     &defaultModelID,
-			DataSourceID:   uuidPtr(uuid.MustParse("00000000-0000-0000-0000-000000000202")),
+			DataSourceIDs:  jbytes([]uuid.UUID{uuid.MustParse("00000000-0000-0000-0000-000000000206"), uuid.MustParse("00000000-0000-0000-0000-00000000020a"), uuid.MustParse("00000000-0000-0000-0000-000000000209"), uuid.MustParse("00000000-0000-0000-0000-00000000020b")}),
 			ParamMappings:  mustJSON([]map[string]interface{}{}),
 			OutputFormat:   "markdown",
 			OutputLang:     "zh-CN",
@@ -446,7 +507,7 @@ func seedAgents(ctx context.Context, db *gorm.DB, ownerID uuid.UUID) error {
 
 请用 Markdown 格式输出，包含表格和关键数据。`,
 			LLMModelID:     &defaultModelID,
-			DataSourceID:   uuidPtr(uuid.MustParse("00000000-0000-0000-0000-000000000203")),
+			DataSourceIDs:  jbytes([]uuid.UUID{uuid.MustParse("00000000-0000-0000-0000-000000000203")}),
 			ParamMappings:  mustJSON([]map[string]interface{}{}),
 			OutputFormat:   "markdown",
 			OutputLang:     "zh-CN",
@@ -469,7 +530,7 @@ func seedAgents(ctx context.Context, db *gorm.DB, ownerID uuid.UUID) error {
 
 输出格式为 Markdown，语言通俗易懂。`,
 			LLMModelID:     &defaultModelID,
-			DataSourceID:   uuidPtr(uuid.MustParse("00000000-0000-0000-0000-000000000204")),
+			DataSourceIDs:  jbytes([]uuid.UUID{uuid.MustParse("00000000-0000-0000-0000-000000000204")}),
 			ParamMappings:  mustJSON([]map[string]interface{}{}),
 			OutputFormat:   "markdown",
 			OutputLang:     "zh-CN",
@@ -492,7 +553,7 @@ func seedAgents(ctx context.Context, db *gorm.DB, ownerID uuid.UUID) error {
 
 请用 Markdown 格式输出评审报告，对每个维度给出评分（低/中/高/严重）和具体说明。`,
 			LLMModelID:     &defaultModelID,
-			DataSourceID:   uuidPtr(uuid.MustParse("00000000-0000-0000-0000-000000000205")),
+			DataSourceIDs:  jbytes([]uuid.UUID{uuid.MustParse("00000000-0000-0000-0000-000000000205")}),
 			ParamMappings:  mustJSON([]map[string]interface{}{}),
 			OutputFormat:   "markdown",
 			OutputLang:     "zh-CN",
@@ -515,7 +576,7 @@ func seedAgents(ctx context.Context, db *gorm.DB, ownerID uuid.UUID) error {
 
 要求语言专业、格式规范，使用 Markdown 格式，包含必要的表格和列表。`,
 			LLMModelID:     &defaultModelID,
-			DataSourceID:   uuidPtr(uuid.MustParse("00000000-0000-0000-0000-000000000205")),
+			DataSourceIDs:  jbytes([]uuid.UUID{uuid.MustParse("00000000-0000-0000-0000-000000000205")}),
 			ParamMappings:  mustJSON([]map[string]interface{}{}),
 			OutputFormat:   "markdown",
 			OutputLang:     "zh-CN",
@@ -726,10 +787,6 @@ func seedSystemConfig(ctx context.Context, db *gorm.DB) error {
 
 func intPtr(i int) *int {
 	return &i
-}
-
-func uuidPtr(u uuid.UUID) *uuid.UUID {
-	return &u
 }
 
 func mustJSON(v interface{}) []byte {

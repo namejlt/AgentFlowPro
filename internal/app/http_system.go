@@ -53,6 +53,8 @@ func (a *App) Dashboard(c *gin.Context) {
 	var rate float64
 	if allCnt > 0 {
 		rate = float64(okCnt) / float64(allCnt) * 100
+		// Round to 1 decimal place
+		rate = float64(int(rate*10+0.5)) / 10
 	}
 	var recentTasks []model.Task
 	_ = a.DB.Where("owner_id = ?", ownerID).Order("created_at desc").Limit(10).Find(&recentTasks).Error

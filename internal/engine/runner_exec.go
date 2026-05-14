@@ -199,21 +199,49 @@ func (r *Runner) runAgentNode(ctx context.Context, taskID uuid.UUID, wf *model.W
 		return "", fmt.Errorf("decrypt api key failed: %w", err)
 	}
 
-	// Execute datasource if bound
+	// Execute datasources if bound
 	dsText := ""
-	if ag.DataSourceID != nil {
+	var dsIDs []uuid.UUID
+	_ = json.Unmarshal(ag.DataSourceIDs, &dsIDs)
+	if len(dsIDs) == 0 {
+		store.log("INFO", node.ID, "no datasource bound to this agent")
+	}
+	for _, dsID := range dsIDs {
 		var ds model.DataSource
-		if err := r.Store.DB.First(&ds, "id = ?", *ag.DataSourceID).Error; err == nil {
-			params, err := datasource.ResolveParams(ds.ParamsSchema, store.global, map[string]any{})
-			if err != nil {
-				return "", fmt.Errorf("resolve datasource params failed: %w", err)
-			}
-			res, err := r.DS.Execute(ctx, &ds, datasource.ExecuteInput{GlobalVars: store.global, Params: params}, r.decryptHeaders, r.decryptAuth)
-			if err != nil {
-				return "", fmt.Errorf("datasource execution failed: %w", err)
-			}
-			dsText = res.Extracted
-			store.log("INFO", node.ID, fmt.Sprintf("datasource extracted %d chars", len(dsText)))
+		if err := r.Store.DB.First(&ds, "id = ?", dsID).Error; err != nil {
+			store.log("WARN", node.ID, fmt.Sprintf("datasource id=%s not found: %v", dsID, err))
+			continue
+		}
+		allVars := store.mergedVars()
+		store.log("INFO", node.ID, fmt.Sprintf("executing datasource %s (%s) with allVars keys: %v", ds.Name, dsID, mapKeys(allVars)))
+		params, err := datasource.ResolveParams(ds.ParamsSchema, allVars, map[string]any{})
+		if err != nil {
+			store.log("WARN", node.ID, fmt.Sprintf("resolve datasource params failed: %v", err))
+			continue
+		}
+		res, err := r.DS.Execute(ctx, &ds, datasource.ExecuteInput{GlobalVars: allVars, Params: params}, r.decryptHeaders, r.decryptAuth)
+		if err != nil {
+			store.log("WARN", node.ID, fmt.Sprintf("datasource execution failed: %v", err))
+			continue
+		}
+		dsData := res.Extracted
+		store.log("INFO", node.ID, fmt.Sprintf("datasource %s extracted %d chars (cache=%v)", ds.Name, len(dsData), res.FromCache))
+		if len(dsData) == 0 {
+			store.log("WARN", node.ID, fmt.Sprintf("datasource %s returned empty content", ds.Name))
+			continue
+		}
+		if len(dsText) > 0 {
+			dsText += "\n\n---\n\n"
+		}
+		dsText += fmt.Sprintf("【%s】\n%s", ds.Name, dsData)
+	}
+
+	// If no datasource data, gather accumulated agent outputs as fallback context
+	if dsText == "" {
+		prevOutputs := collectAgentOutputs(store)
+		if len(prevOutputs) > 0 {
+			dsText = strings.Join(prevOutputs, "\n\n---\n\n")
+			store.log("INFO", node.ID, fmt.Sprintf("using %d previous agent outputs as context (%d chars)", len(prevOutputs), len(dsText)))
 		}
 	}
 
@@ -230,9 +258,13 @@ func (r *Runner) runAgentNode(ctx context.Context, taskID uuid.UUID, wf *model.W
 	messages := []llm.Message{
 		{Role: "system", Content: prompt},
 	}
-	userContent := "请根据系统指令输出分析结果。"
+	currentDateStr := store.getString("report_date")
+	if currentDateStr == "" {
+		currentDateStr = time.Now().Format("2006年01月02日")
+	}
+	userContent := fmt.Sprintf("[系统时间：%s]\n请根据系统指令输出分析结果。", currentDateStr)
 	if dsText != "" {
-		userContent = fmt.Sprintf("以下是本次分析所需的数据:\n\n%s\n\n请根据系统指令输出分析结果。", dsText)
+		userContent = fmt.Sprintf("[系统时间：%s]\n以下是本次分析所需的数据:\n\n%s\n\n请根据系统指令输出分析结果。", currentDateStr, dsText)
 	}
 	messages = append(messages, llm.Message{Role: "user", Content: userContent})
 
@@ -411,7 +443,15 @@ func (r *Runner) runDebate(ctx context.Context, taskID uuid.UUID, wf *model.Work
 	}
 	stopConsensus, _ := node.Data["stop_on_consensus"].(bool)
 
+	// Gather accumulated agent outputs as debate context
+	debateContext := strings.Join(collectAgentOutputs(store), "\n\n---\n\n")
+	if debateContext == "" {
+		debateContext = "（暂无前置分析数据）"
+	}
+	store.log("INFO", node.ID, fmt.Sprintf("debate starting with %d chars of context from %d agents", len(debateContext), len(collectAgentOutputs(store))))
+
 	lastRound := map[string]string{}
+	lastRoundNames := map[string]string{}
 	agentNames := map[string]string{} // agent_id -> name, loaded once
 	for _, aid := range ids {
 		var ag model.Agent
@@ -431,19 +471,33 @@ func (r *Runner) runDebate(ctx context.Context, taskID uuid.UUID, wf *model.Work
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
-				others := ""
-				if round > 1 {
+				aidStr := aid.String()
+				// Build context from previous rounds + own previous output
+				contextParts := []string{}
+				if round == 1 {
+					// Round 1: pass all upstream analysis data as debate topic
+					if debateContext != "" {
+						contextParts = append(contextParts, fmt.Sprintf("【前置分析数据】\n%s", debateContext))
+					}
+				} else {
+					// Rounds 2+: pass all other agents' last round + own last round + original analysis
 					for oid, txt := range lastRound {
-						if oid == aid.String() {
-							continue
-						}
 						name := agentNames[oid]
 						if name == "" {
 							name = oid
 						}
-						others += fmt.Sprintf("【对手 %s 上轮结论】\n%s\n\n", name, txt)
+						tag := "对手"
+						if oid == aidStr {
+							tag = "我方"
+						}
+						contextParts = append(contextParts, fmt.Sprintf("【%s %s 上轮结论】\n%s", tag, name, txt))
+					}
+					// Include original analysis context so agents don't lose the topic
+					if debateContext != "" {
+						contextParts = append(contextParts, fmt.Sprintf("【原始分析数据参考】\n%s", debateContext))
 					}
 				}
+				others := strings.Join(contextParts, "\n\n")
 				var ag model.Agent
 				if err := r.Store.DB.First(&ag, "id = ?", aid).Error; err != nil {
 					eMu.Lock()
@@ -466,30 +520,71 @@ func (r *Runner) runDebate(ctx context.Context, taskID uuid.UUID, wf *model.Work
 					return
 				}
 				prompt := templatex.Render(ag.SystemPrompt, templatex.MergeStringMap(
-					templatex.BuildPromptVarMap(store.global, nil),
+					store.flatVars(),
 					map[string]string{
 						"debate.others_last": others,
 						"debate.round":       fmt.Sprint(round),
 					},
 				))
+				reportDate := store.getString("report_date")
+				if reportDate == "" {
+					reportDate = time.Now().Format("2006年01月02日")
+				}
+				userMsg := fmt.Sprintf("[系统时间：%s]\n以下是辩论分析数据:\n\n%s\n\n请基于以上数据，结合你的专业判断，输出本轮辩论结论。", reportDate, others)
 				msgs := []llm.Message{
 					{Role: "system", Content: prompt},
-					{Role: "user", Content: "请输出本轮辩论结论。"},
+					{Role: "user", Content: userMsg},
 				}
+				debateStepID := uuid.NewString()
+				emit("debate_stream_start", map[string]any{
+					"step_id":    debateStepID,
+					"agent_id":   aid.String(),
+					"agent_name": ag.Name,
+					"round":      round,
+				})
+				var debateAcc strings.Builder
 				resp, err := r.LLM.Chat(ctx, llm.ChatOpts{
 					Endpoint: mo.Endpoint, APIKey: apiKey, Model: mo.ModelID, Messages: msgs,
 					Temp: mo.Temperature, MaxTokens: mo.MaxTokens,
 					Timeout: time.Duration(mo.TimeoutMS) * time.Millisecond,
-					Retries: mo.RetryCount, Stream: false,
+					Retries: mo.RetryCount, Stream: true,
+					OnChunk: func(c llm.StreamChunk) error {
+						if c.Delta != "" {
+							debateAcc.WriteString(c.Delta)
+							emit("debate_stream_chunk", map[string]any{
+								"step_id": debateStepID,
+								"chunk":   c.Delta,
+								"accumulated": debateAcc.String(),
+							})
+						}
+						return nil
+					},
 				})
 				if err != nil {
+					emit("debate_stream_end", map[string]any{
+						"step_id":     debateStepID,
+						"full_output": debateAcc.String(),
+						"error":       err.Error(),
+					})
 					eMu.Lock()
 					errList = append(errList, err)
 					eMu.Unlock()
 					return
 				}
+				debateOut := resp.Content
+				if debateOut == "" {
+					debateOut = debateAcc.String()
+				}
+				emit("debate_stream_end", map[string]any{
+					"step_id":     debateStepID,
+					"full_output": debateOut,
+					"tokens_used": resp.Tokens,
+				})
 				mu.Lock()
-				roundOutputs[aid.String()] = resp.Content
+				roundOutputs[aid.String()] = debateOut
+				if name, ok := agentNames[aid.String()]; ok && name != "" {
+					lastRoundNames[aid.String()] = name
+				}
 				mu.Unlock()
 			}()
 		}
@@ -498,7 +593,18 @@ func (r *Runner) runDebate(ctx context.Context, taskID uuid.UUID, wf *model.Work
 			return "", errList[0]
 		}
 		lastRound = roundOutputs
-		store.appendDebate(map[string]any{"node_id": node.ID, "round": round, "outputs": roundOutputs})
+		for aid, output := range roundOutputs {
+			name := agentNames[aid]
+			if name == "" {
+				name = aid
+			}
+			store.appendDebate(map[string]any{
+				"agent_id":   aid,
+				"agent_name": name,
+				"output":     output,
+				"round":      round,
+			})
+		}
 		// Build array-format debate round for frontend display
 		debateEntries := make([]map[string]any, 0, len(roundOutputs))
 		for aid, output := range roundOutputs {
@@ -519,6 +625,13 @@ func (r *Runner) runDebate(ctx context.Context, taskID uuid.UUID, wf *model.Work
 			break
 		}
 	}
+	// Store each debate agent's final output so downstream nodes (summarize, risk_review) can access them
+	for aidStr, txt := range lastRound {
+		if aid, err := uuid.Parse(aidStr); err == nil {
+			store.setAgentOutput(aid, txt)
+		}
+	}
+
 	var sb strings.Builder
 	for aid, txt := range lastRound {
 		sb.WriteString(fmt.Sprintf("【%s】\n%s\n\n", aid, txt))
@@ -563,17 +676,59 @@ func (r *Runner) runCrossValidate(ctx context.Context, wf *model.Workflow, node 
 	if err != nil {
 		return "", err
 	}
-	msgs := []llm.Message{{Role: "system", Content: sys}, {Role: "user", Content: sb.String()}}
+	reportDate := store.getString("report_date")
+	if reportDate == "" {
+		reportDate = time.Now().Format("2006年01月02日")
+	}
+	userContent := fmt.Sprintf("[系统时间：%s]\n%s", reportDate, sb.String())
+	msgs := []llm.Message{{Role: "system", Content: sys}, {Role: "user", Content: userContent}}
+
+	stepID := uuid.NewString()
+	emit("cross_validate_stream_start", map[string]any{
+		"step_id": stepID,
+		"node_id": node.ID,
+	})
+
+	var acc strings.Builder
+	llmTimeout := time.Duration(mo.TimeoutMS) * time.Millisecond
+	if llmTimeout < 300*time.Second {
+		llmTimeout = 300 * time.Second
+	}
 	resp, err := r.LLM.Chat(ctx, llm.ChatOpts{
 		Endpoint: mo.Endpoint, APIKey: apiKey, Model: mo.ModelID, Messages: msgs,
-		Temp: 0.2, MaxTokens: mo.MaxTokens, Timeout: time.Duration(mo.TimeoutMS) * time.Millisecond,
-		Retries: mo.RetryCount, Stream: false,
+		Temp: 0.2, MaxTokens: mo.MaxTokens, Timeout: llmTimeout,
+		Retries: mo.RetryCount, Stream: true,
+		OnChunk: func(c llm.StreamChunk) error {
+			if c.Delta != "" {
+				acc.WriteString(c.Delta)
+				emit("cross_validate_stream_chunk", map[string]any{
+					"step_id": stepID,
+					"chunk":   c.Delta,
+					"accumulated": acc.String(),
+				})
+			}
+			return nil
+		},
 	})
 	if err != nil {
+		emit("cross_validate_stream_end", map[string]any{
+			"step_id":     stepID,
+			"full_output": acc.String(),
+			"error":       err.Error(),
+		})
 		return "", err
 	}
-	emit("cross_validate", map[string]any{"node_id": node.ID, "result": resp.Content})
-	return resp.Content, nil
+	out := resp.Content
+	if out == "" {
+		out = acc.String()
+	}
+	emit("cross_validate_stream_end", map[string]any{
+		"step_id":     stepID,
+		"full_output": out,
+		"tokens_used": resp.Tokens,
+	})
+	emit("cross_validate", map[string]any{"node_id": node.ID, "result": out})
+	return out, nil
 }
 
 // runRiskReview performs risk assessment on previous outputs.
@@ -594,18 +749,60 @@ func (r *Runner) runRiskReview(ctx context.Context, wf *model.Workflow, node Flo
 	if err != nil {
 		return "", err
 	}
-	msgs := []llm.Message{{Role: "system", Content: sys}, {Role: "user", Content: body}}
+	reportDate := store.getString("report_date")
+	if reportDate == "" {
+		reportDate = time.Now().Format("2006年01月02日")
+	}
+	userContent := fmt.Sprintf("[系统时间：%s]\n%s", reportDate, body)
+	msgs := []llm.Message{{Role: "system", Content: sys}, {Role: "user", Content: userContent}}
+
+	stepID := uuid.NewString()
+	emit("risk_review_stream_start", map[string]any{
+		"step_id": stepID,
+		"node_id": node.ID,
+	})
+
+	var acc strings.Builder
+	llmTimeout := time.Duration(mo.TimeoutMS) * time.Millisecond
+	if llmTimeout < 300*time.Second {
+		llmTimeout = 300 * time.Second
+	}
 	resp, err := r.LLM.Chat(ctx, llm.ChatOpts{
 		Endpoint: mo.Endpoint, APIKey: apiKey, Model: mo.ModelID, Messages: msgs,
-		Temp: 0.2, MaxTokens: mo.MaxTokens, Timeout: time.Duration(mo.TimeoutMS) * time.Millisecond,
-		Retries: mo.RetryCount, Stream: false,
+		Temp: 0.2, MaxTokens: mo.MaxTokens, Timeout: llmTimeout,
+		Retries: mo.RetryCount, Stream: true,
+		OnChunk: func(c llm.StreamChunk) error {
+			if c.Delta != "" {
+				acc.WriteString(c.Delta)
+				emit("risk_review_stream_chunk", map[string]any{
+					"step_id": stepID,
+					"chunk":   c.Delta,
+					"accumulated": acc.String(),
+				})
+			}
+			return nil
+		},
 	})
 	if err != nil {
+		emit("risk_review_stream_end", map[string]any{
+			"step_id":     stepID,
+			"full_output": acc.String(),
+			"error":       err.Error(),
+		})
 		return "", err
 	}
-	store.appendRisk(map[string]any{"node_id": node.ID, "text": resp.Content})
-	emit("risk_review", map[string]any{"node_id": node.ID, "result": resp.Content})
-	return resp.Content, nil
+	out := resp.Content
+	if out == "" {
+		out = acc.String()
+	}
+	emit("risk_review_stream_end", map[string]any{
+		"step_id":     stepID,
+		"full_output": out,
+		"tokens_used": resp.Tokens,
+	})
+	store.appendRisk(map[string]any{"node_id": node.ID, "text": out})
+	emit("risk_review", map[string]any{"node_id": node.ID, "result": out})
+	return out, nil
 }
 
 func collectAgentOutputs(store *runStore) []string {
@@ -613,6 +810,43 @@ func collectAgentOutputs(store *runStore) []string {
 	var lines []string
 	for k, v := range ag {
 		lines = append(lines, fmt.Sprintf("【%s】\n%v", k, v))
+	}
+	return lines
+}
+
+// collectAllOutputs collects ALL accumulated outputs including agent outputs,
+// cross_validate, risk_review, debate, and other node outputs from the store.
+func collectAllOutputs(store *runStore) []string {
+	// Start with all agent outputs
+	_, _, _, _, ag := store.snapshot()
+	seen := map[string]bool{}
+	var lines []string
+	for k, v := range ag {
+		lines = append(lines, fmt.Sprintf("【%s】\n%v", k, v))
+		seen[k] = true
+	}
+
+	// Also include node outputs from kv that are NOT agent outputs
+	// (e.g. cross_validate, risk_review, debate node results)
+	flat := store.flatVars()
+	for k, v := range flat {
+		// Skip internal keys and already-included agent outputs
+		if strings.HasPrefix(k, "agent:") && strings.HasSuffix(k, ":output") {
+			agentID := strings.TrimPrefix(k, "agent:")
+			agentID = strings.TrimSuffix(agentID, ":output")
+			if seen[agentID] {
+				continue
+			}
+		}
+		if strings.HasPrefix(k, "node:") {
+			// Show node output as a section
+			nodeID := strings.TrimPrefix(k, "node:")
+			nodeID = strings.TrimSuffix(nodeID, ":output")
+			if !seen[nodeID] {
+				lines = append(lines, fmt.Sprintf("【%s】\n%v", nodeID, v))
+				seen[nodeID] = true
+			}
+		}
 	}
 	return lines
 }
@@ -638,7 +872,8 @@ func (r *Runner) runSummarize(ctx context.Context, wf *model.Workflow, node Flow
 	if v, ok := node.Data["prompt"].(string); ok && v != "" {
 		sys = templatex.Render(v, store.flatVars())
 	}
-	body := strings.Join(collectAgentOutputs(store), "\n\n")
+	// Collect ALL accumulated outputs — agent outputs + cross_validate + risk_review + debate
+	body := strings.Join(collectAllOutputs(store), "\n\n")
 	mo, err := r.pickAnyModel(wf)
 	if err != nil {
 		return "", err
@@ -647,18 +882,61 @@ func (r *Runner) runSummarize(ctx context.Context, wf *model.Workflow, node Flow
 	if err != nil {
 		return "", err
 	}
-	msgs := []llm.Message{{Role: "system", Content: sys}, {Role: "user", Content: body}}
+	reportDate := store.getString("report_date")
+	if reportDate == "" {
+		reportDate = time.Now().Format("2006年01月02日")
+	}
+	userContent := fmt.Sprintf("[系统时间：%s]\n请基于以下所有分析结果，生成一份完整的最终 Markdown 报告。\n\n%s", reportDate, body)
+	msgs := []llm.Message{{Role: "system", Content: sys}, {Role: "user", Content: userContent}}
+
+	stepID := uuid.NewString()
+	emit("summarize_stream_start", map[string]any{
+		"step_id": stepID,
+		"node_id": node.ID,
+	})
+
+	var acc strings.Builder
+	// Summarize processes all agent outputs — use generous timeout (5min)
+	llmTimeout := time.Duration(mo.TimeoutMS) * time.Millisecond
+	if llmTimeout < 300*time.Second {
+		llmTimeout = 300 * time.Second
+	}
 	resp, err := r.LLM.Chat(ctx, llm.ChatOpts{
 		Endpoint: mo.Endpoint, APIKey: apiKey, Model: mo.ModelID, Messages: msgs,
-		Temp: 0.4, MaxTokens: mo.MaxTokens, Timeout: time.Duration(mo.TimeoutMS) * time.Millisecond,
-		Retries: mo.RetryCount, Stream: false,
+		Temp: 0.4, MaxTokens: mo.MaxTokens, Timeout: llmTimeout,
+		Retries: mo.RetryCount, Stream: true,
+		OnChunk: func(c llm.StreamChunk) error {
+			if c.Delta != "" {
+				acc.WriteString(c.Delta)
+				emit("summarize_stream_chunk", map[string]any{
+					"step_id": stepID,
+					"chunk":   c.Delta,
+					"accumulated": acc.String(),
+				})
+			}
+			return nil
+		},
 	})
 	if err != nil {
+		emit("summarize_stream_end", map[string]any{
+			"step_id":     stepID,
+			"full_output": acc.String(),
+			"error":       err.Error(),
+		})
 		return "", err
 	}
-	emit("summarize", map[string]any{"node_id": node.ID, "result": resp.Content})
-	store.setKV("report:md", resp.Content)
-	return resp.Content, nil
+	out := resp.Content
+	if out == "" {
+		out = acc.String()
+	}
+	emit("summarize_stream_end", map[string]any{
+		"step_id":     stepID,
+		"full_output": out,
+		"tokens_used": resp.Tokens,
+	})
+	emit("summarize", map[string]any{"node_id": node.ID, "result": out})
+	store.setKV("report:md", out)
+	return out, nil
 }
 
 // runTransform applies variable transformation rules.
@@ -683,6 +961,55 @@ func (r *Runner) finalizeSuccess(ctx context.Context, taskID uuid.UUID, wf *mode
 	if strings.TrimSpace(md) == "" {
 		md = store.getString("report:title")
 	}
+
+	// Debate logs are already stored in frontend-friendly format {agent_id, agent_name, output, round}
+	debateOut := make([]map[string]any, 0)
+	for _, raw := range debate {
+		if m, ok := raw.(map[string]any); ok {
+			debateOut = append(debateOut, m)
+		}
+	}
+
+	// Restructure risk reviews to frontend-friendly format
+	riskOut := make([]map[string]any, 0)
+	for _, raw := range risk {
+		if m, ok := raw.(map[string]any); ok {
+			text, _ := m["text"].(string)
+			nodeID, _ := m["node_id"].(string)
+			level := "medium"
+			if strings.Contains(text, "严重") || strings.Contains(text, "critical") {
+				level = "critical"
+			} else if strings.Contains(text, "高") || strings.Contains(text, "high") {
+				level = "high"
+			} else if strings.Contains(text, "低") || strings.Contains(text, "low") {
+				level = "low"
+			}
+			riskOut = append(riskOut, map[string]any{
+				"dimension": nodeID,
+				"level":     level,
+				"summary":   text,
+			})
+		}
+	}
+
+	// Restructure exec logs to frontend-friendly format
+	logOut := make([]map[string]any, 0)
+	for _, raw := range logs {
+		if m, ok := raw.(map[string]any); ok {
+			node, _ := m["node"].(string)
+			level, _ := m["level"].(string)
+			msg, _ := m["msg"].(string)
+			ts, _ := m["ts"].(float64)
+			logOut = append(logOut, map[string]any{
+				"node_id":   node,
+				"node_type": "",
+				"action":    level,
+				"detail":    msg,
+				"timestamp": ts,
+			})
+		}
+	}
+
 	rep := model.Report{
 		ID:            uuid.New(),
 		TaskID:        taskID,
@@ -691,9 +1018,9 @@ func (r *Runner) finalizeSuccess(ctx context.Context, taskID uuid.UUID, wf *mode
 		Title:         title,
 		ContentMD:     md,
 		AgentOutputs:  jsonutil.MustMarshal(agents),
-		DebateLogs:    jsonutil.MustMarshal(debate),
-		RiskReviews:   jsonutil.MustMarshal(risk),
-		ExecLogs:      jsonutil.MustMarshal(logs),
+		DebateLogs:    jsonutil.MustMarshal(debateOut),
+		RiskReviews:   jsonutil.MustMarshal(riskOut),
+		ExecLogs:      jsonutil.MustMarshal(logOut),
 		InputSnapshot: jsonutil.MustMarshal(glob),
 		Status:        "completed",
 		Archived:      false,

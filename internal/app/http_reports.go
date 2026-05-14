@@ -1,6 +1,7 @@
 package app
 
 import (
+	"encoding/json"
 	"net/http"
 
 	"github.com/gin-gonic/gin"
@@ -77,10 +78,12 @@ func (a *App) GetReport(c *gin.Context) {
 		"id": r.ID.String(), "task_id": r.TaskID.String(), "title": r.Title,
 		"workflow_id": r.WorkflowID.String(), "workflow_name": wfName,
 		"owner_id": r.OwnerID.String(), "content_md": r.ContentMD,
-		"agent_outputs": r.AgentOutputs, "debate_logs": r.DebateLogs,
-		"risk_reviews": r.RiskReviews, "exec_logs": r.ExecLogs,
-		"input_snapshot": r.InputSnapshot, "status": r.Status,
-		"archived": r.Archived, "total_tokens": r.TotalTokens,
+		"agent_outputs":  json.RawMessage(r.AgentOutputs),
+		"debate_logs":   json.RawMessage(r.DebateLogs),
+		"risk_reviews":  json.RawMessage(r.RiskReviews),
+		"exec_logs":     json.RawMessage(r.ExecLogs),
+		"input_snapshot": json.RawMessage(r.InputSnapshot),
+		"status": r.Status, "archived": r.Archived, "total_tokens": r.TotalTokens,
 		"duration_ms": r.DurationMS, "created_at": r.CreatedAt,
 		"updated_at": r.UpdatedAt,
 	})

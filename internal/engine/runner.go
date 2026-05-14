@@ -106,6 +106,12 @@ func (r *Runner) run(ctx context.Context, taskID uuid.UUID) error {
 	global, _ := jsonutil.UnmarshalMap(t.InputParams)
 	store := newRunStore(global)
 
+	// Inject current date/time as template variables so agents can use {{current_date}} etc.
+	now := time.Now()
+	store.setKV("current_date", now.Format("2006-01-02"))
+	store.setKV("current_time", now.Format("15:04:05"))
+	store.setKV("report_date", now.Format("2006年01月02日"))
+
 	_ = r.Store.DB.Model(&model.Task{}).Where("id = ?", taskID).Updates(map[string]any{
 		"status":           "running",
 		"started_at":       time.Now(),
@@ -331,10 +337,31 @@ func (s *runStore) flatVars() map[string]string {
 	return out
 }
 
+func (s *runStore) mergedVars() map[string]any {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := map[string]any{}
+	for k, v := range s.global {
+		out[k] = v
+	}
+	for k, v := range s.kv {
+		out[k] = v
+	}
+	return out
+}
+
 func (s *runStore) appendDebate(rec any) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.debate = append(s.debate, rec)
+}
+
+func mapKeys(m map[string]any) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	return keys
 }
 
 func (s *runStore) appendRisk(rec any) {

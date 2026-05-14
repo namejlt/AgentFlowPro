@@ -71,7 +71,7 @@
             </el-select>
           </el-form-item>
           <el-form-item label="绑定数据源">
-            <el-select v-model="form.datasource_id" placeholder="选择数据源" clearable style="width: 100%">
+            <el-select v-model="form.datasource_ids" placeholder="选择数据源（可多选）" multiple clearable style="width: 100%">
               <el-option v-for="ds in datasources" :key="ds.id" :label="ds.name" :value="ds.id" />
             </el-select>
           </el-form-item>
@@ -143,7 +143,7 @@ const form = reactive<Partial<AgentItem>>({
   icon: '',
   system_prompt: '',
   llm_model_id: '',
-  datasource_id: '',
+  datasource_ids: [] as string[],
   param_mappings: [],
   output_format: 'markdown',
   output_lang: 'zh-CN',

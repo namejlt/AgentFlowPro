@@ -77,17 +77,15 @@
 
           <el-tab-pane label="风险评审" name="risk">
             <div class="risk-area">
-              <el-table :data="riskReviews" stripe>
-                <el-table-column prop="dimension" label="维度" width="120" />
-                <el-table-column prop="level" label="等级" width="100">
-                  <template #default="{ row }">
-                    <el-tag :type="row.level === 'critical' ? 'danger' : row.level === 'high' ? 'warning' : row.level === 'medium' ? '' : 'success'" size="small">
-                      {{ row.level }}
-                    </el-tag>
-                  </template>
-                </el-table-column>
-                <el-table-column prop="summary" label="摘要" min-width="300" />
-              </el-table>
+              <div v-for="(item, idx) in riskReviews" :key="idx" class="risk-card">
+                <div class="risk-card-header">
+                  <el-tag :type="item.level === 'critical' ? 'danger' : item.level === 'high' ? 'warning' : item.level === 'medium' ? '' : 'success'" size="small">
+                    {{ item.level === 'critical' ? '严重' : item.level === 'high' ? '高风险' : item.level === 'medium' ? '中风险' : '低风险' }}
+                  </el-tag>
+                  <span class="risk-dimension">{{ item.dimension || '风险评估' }}</span>
+                </div>
+                <div class="risk-card-body markdown-body" v-html="renderMarkdown(item.summary)" />
+              </div>
               <el-empty v-if="riskReviews.length === 0" description="暂无风险评审" />
             </div>
           </el-tab-pane>
@@ -109,7 +107,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted, computed } from 'vue'
+import { ref, onMounted, onUnmounted, computed, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import type { TaskItem, TaskStepItem, DebateLog, RiskReview } from '@/types'
 import { getTask, getTaskSteps, stopTask, rerunTask } from '@/api/tasks'
@@ -122,35 +120,90 @@ const route = useRoute()
 const streamStore = useTaskStreamStore()
 
 const task = ref<TaskItem>({} as TaskItem)
-const steps = ref<TaskStepItem[]>([])
+const rawSteps = ref<TaskStepItem[]>([])
 const activeTab = ref('output')
+
+// Reactive steps: merge API-loaded steps with real-time SSE node statuses
+const steps = computed<TaskStepItem[]>(() => {
+  return rawSteps.value.map(s => {
+    const liveStatus = streamStore.stepStatuses[s.node_id]
+    if (liveStatus) {
+      return { ...s, status: liveStatus as any }
+    }
+    return s
+  })
+})
 
 const debateLogs = computed<DebateLog[]>(() => {
   const result: DebateLog[] = []
+
+  // 1. Collect from SSE debate_round events (real-time during execution)
   streamStore.logs.filter(l => l.event === 'debate_round').forEach(l => {
     const outputs = l.data?.agent_outputs
     if (outputs) {
       if (Array.isArray(outputs)) {
         result.push(...outputs.map((a: any) => ({
-          round: a.round || l.data.round,
+          round: a.round || l.data.round || 0,
           agent_id: a.agent_id || '',
-          agent_name: a.agent_name || a.agent_id || '',
+          agent_name: a.agent_name || a.agent_id || '辩手',
           output: a.output || '',
-          timestamp: l.timestamp,
+          timestamp: l.timestamp || new Date().toISOString(),
         })))
       } else if (typeof outputs === 'object') {
         for (const [agentId, output] of Object.entries(outputs)) {
           result.push({
-            round: l.data.round,
+            round: l.data.round || 0,
             agent_id: agentId,
-            agent_name: agentId,
+            agent_name: String(agentId),
             output: output as string,
-            timestamp: l.timestamp,
+            timestamp: l.timestamp || new Date().toISOString(),
           })
         }
       }
     }
   })
+
+  // 2. Extract from completed debate step outputs (for page refresh / post-completion)
+  for (const step of rawSteps.value) {
+    if (step.node_type === 'debate' && step.output && step.status === 'completed') {
+      const outText = (step.output as any).text || ''
+      if (outText) {
+        // Check if we already have debate entries for this round/agent from SSE
+        const existingKey = (a: DebateLog) => `${a.round}:${a.agent_id}`
+        const existingKeys = new Set(result.map(existingKey))
+        // Parse debate output — each agent section is delimited by 【agent_id】
+        const agentBlocks = outText.split(/(?=【)/).filter(Boolean)
+        for (const block of agentBlocks) {
+          const match = block.match(/【([^】]+)】\n?([\s\S]*)/)
+          if (match) {
+            const agentId = match[1]
+            const output = match[2].trim()
+            const entry: DebateLog = {
+              round: step.debate_round || 0,
+              agent_id: agentId,
+              agent_name: agentId,
+              output,
+              timestamp: step.finished_at || new Date().toISOString(),
+            }
+            if (!existingKeys.has(existingKey(entry))) {
+              result.push(entry)
+            }
+          }
+        }
+        // Fallback: if no structured blocks found, show entire output as one entry
+        if (agentBlocks.length <= 1 && result.length === 0) {
+          result.push({
+            round: step.debate_round || 1,
+            agent_id: step.agent_id || 'debate',
+            agent_name: step.agent_name || '辩论',
+            output: outText,
+            timestamp: step.finished_at || new Date().toISOString(),
+          })
+        }
+      }
+    }
+  }
+
   return result
 })
 
@@ -187,7 +240,24 @@ async function fetchSteps() {
   const id = route.params.id as string
   try {
     const res = await getTaskSteps(id)
-    steps.value = res.data.data || []
+    rawSteps.value = res.data.data || []
+    // Pre-populate nodeStates from historical step data so past outputs are visible
+    // even before (or without) SSE connection
+    for (const step of rawSteps.value) {
+      const stepId = step.node_id || step.id
+      const existing = streamStore.nodeStates[stepId]
+      if (existing) continue // don't overwrite live data
+      let output = ''
+      if (step.output && typeof step.output === 'object') {
+        output = (step.output as any).text || JSON.stringify(step.output)
+      }
+      streamStore.nodeStates[stepId] = {
+        nodeId: stepId,
+        status: step.status,
+        output,
+        agentName: step.agent_name || step.node_type || '',
+      }
+    }
   } catch {}
 }
 
@@ -197,6 +267,8 @@ async function handleStop() {
     await stopTask(task.value.id)
     ElMessage.success('已停止')
     fetchTask()
+    fetchSteps()
+    if (stepsTimer) { clearInterval(stepsTimer); stepsTimer = null }
   } catch {}
 }
 
@@ -204,21 +276,47 @@ async function handleRerun() {
   try {
     const res = await rerunTask(task.value.id)
     ElMessage.success('已重新执行')
+    rawSteps.value = []
+    streamStore.init()
     streamStore.connect(res.data.data.id)
-    fetchTask()
+    await fetchTask()
+    await fetchSteps()
+    // Restart steps polling
+    if (stepsTimer) clearInterval(stepsTimer)
+    stepsTimer = setInterval(fetchSteps, 3000)
   } catch {}
 }
+
+// Auto-refresh steps while task is running
+let stepsTimer: ReturnType<typeof setInterval> | null = null
+
+watch(
+  () => streamStore.stepStatuses,
+  () => {
+    // When SSE node_status arrives, re-fetch steps to get latest agent_name etc.
+    if (Object.keys(streamStore.stepStatuses).length > 0) {
+      fetchSteps()
+    }
+  },
+  { deep: true }
+)
 
 onMounted(async () => {
   await fetchTask()
   await fetchSteps()
   if (task.value.status === 'running' || task.value.status === 'pending' || task.value.status === 'queued') {
     streamStore.connect(task.value.id)
+    // Poll steps every 3s while running in case SSE misses events
+    stepsTimer = setInterval(fetchSteps, 3000)
   }
 })
 
 onUnmounted(() => {
   streamStore.disconnect()
+  if (stepsTimer) {
+    clearInterval(stepsTimer)
+    stepsTimer = null
+  }
 })
 </script>
 
@@ -327,5 +425,30 @@ onUnmounted(() => {
 .log-data {
   color: #606266;
   word-break: break-all;
+}
+.risk-area {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.risk-card {
+  border: 1px solid #e8e8e8;
+  border-radius: 8px;
+  padding: 12px;
+}
+.risk-card-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+.risk-dimension {
+  font-size: 14px;
+  font-weight: 600;
+  color: #303133;
+}
+.risk-card-body {
+  font-size: 13px;
+  line-height: 1.6;
 }
 </style>
